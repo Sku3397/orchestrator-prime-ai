@@ -8,6 +8,7 @@ import threading # For GUI updates from watchdog thread
 import queue # For getting results from threaded Gemini calls
 import uuid
 import traceback # Added for printing stack
+import json # Added import
 
 from models import Project, ProjectState, Turn # MODIFIED
 from persistence import load_project_state, save_project_state, get_project_by_id, load_projects, PersistenceError # MODIFIED
@@ -71,8 +72,8 @@ class OrchestrationEngine:
         self.gemini_client = GeminiCommunicator() # Might raise if config is bad
         self.config = ConfigManager()
         self.gui_update_callback = gui_update_callback # To notify GUI of changes
-        self.file_observer: Optional[Observer] = None
-        self._log_handler: Optional[LogFileCreatedHandler] = None # Renamed for clarity
+        self.file_observer: Optional['Observer'] = None # Use string literal for type hint
+        self._log_handler: Optional['LogFileCreatedHandler'] = None # Renamed for clarity, also use string literal
         self.dev_logs_dir: str = ""
         self.dev_instructions_dir: str = ""
         self.last_error_message: Optional[str] = None
