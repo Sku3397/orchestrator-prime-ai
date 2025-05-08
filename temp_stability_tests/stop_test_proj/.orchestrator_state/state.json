@@ -1,0 +1,38 @@
+{
+    "project_id": "0f7b0646-b44b-46ea-80d4-d76b37a7244d",
+    "conversation_history": [
+        {
+            "sender": "USER",
+            "message": "Initial instruction",
+            "timestamp": "2025-05-07T23:53:04.845846",
+            "metadata": null
+        },
+        {
+            "sender": "gemini",
+            "message": "Create the file `dev_logs/cursor_step_output.txt` in the project directory.  Write \"SUCCESS: Ready to receive instructions.\" into the file.",
+            "timestamp": "2025-05-07T23:53:06.265698",
+            "metadata": null
+        },
+        {
+            "sender": "system",
+            "message": "Task stopped by user from state: PAUSED_WAITING_USER_INPUT.",
+            "timestamp": "2025-05-07T23:53:07.280747",
+            "metadata": null
+        },
+        {
+            "sender": "USER",
+            "message": "Start a new task after stopping.",
+            "timestamp": "2025-05-07T23:53:07.284289",
+            "metadata": null
+        },
+        {
+            "sender": "gemini",
+            "message": "Create the file `dev_logs/cursor_step_output.txt` in the project directory.  Write \"SUCCESS: Ready to receive instructions.\" into the file.",
+            "timestamp": "2025-05-07T23:53:08.253378",
+            "metadata": null
+        }
+    ],
+    "current_status": "RUNNING_WAITING_LOG",
+    "last_instruction_sent": "Create the file `dev_logs/cursor_step_output.txt` in the project directory.  Write \"SUCCESS: Ready to receive instructions.\" into the file.",
+    "context_summary": null
+}
