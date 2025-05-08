@@ -224,33 +224,59 @@ class OrchestrationEngine:
             self._set_state(EngineState.ERROR, "Cannot start file watcher: No active project or logs directory.")
             return
 
+        # Ensure any existing observer is fully stopped before creating a new one
+        if self.file_observer and self.file_observer.is_alive(): # Check if it's alive
+            print("DEBUG_ENGINE: Attempting to stop existing file watcher before starting a new one...")
+            self.stop_file_watcher() # This will join and nullify
+
+        # Defensive check if stop_file_watcher failed to nullify or wasn't called correctly
         if self.file_observer:
-            self.stop_file_watcher() # Stop existing one first
+            print("WARNING_ENGINE: file_observer was not None before creating a new one. Explicitly nullifying.")
+            self.file_observer = None # Ensure it's None
 
         self._log_handler = LogFileCreatedHandler(self)
-        self.file_observer = Observer()
+        self.file_observer = Observer() # Create a new observer instance
         try:
-            # Ensure the directory exists before watching
             os.makedirs(self.dev_logs_dir, exist_ok=True)
             self.file_observer.schedule(self._log_handler, self.dev_logs_dir, recursive=False)
             self.file_observer.start()
-            self._start_cursor_timeout() # Start timeout when watcher starts
+            self._start_cursor_timeout()
             print(f"File watcher started on: {self.dev_logs_dir}")
-        except Exception as e:
+        except Exception as e: # More specific exceptions could be caught, e.g., for read-only FS
             self._set_state(EngineState.ERROR, f"Failed to start file watcher: {e}")
-            self.file_observer = None
+            self.file_observer = None # Ensure nullification on error
 
     def stop_file_watcher(self):
-        if self.file_observer:
-            try:
-                self.file_observer.stop()
-                self.file_observer.join(timeout=5) # Wait for observer thread to finish
-                print("File watcher stopped.")
-            except Exception as e:
-                print(f"Error stopping file watcher: {e}")
-            finally:
-                self.file_observer = None
-                self._log_handler = None
+        observer_to_stop = self.file_observer # Capture current observer
+        if observer_to_stop: # Check if there is an observer instance
+            self.file_observer = None # Nullify immediately to prevent re-entry issues or use by other parts
+            if observer_to_stop.is_alive():
+                try:
+                    print("DEBUG_ENGINE: Stopping file watcher observer thread...")
+                    observer_to_stop.stop()
+                    # observer_to_stop.join(timeout=1) # Shorter timeout for join
+                except Exception as e: # Catch errors during stop (e.g. if thread already stopped)
+                    print(f"Warning_ENGINE: Error during observer.stop(): {e}")
+                
+                try:
+                    # Wait for the thread to terminate with a timeout
+                    # It's crucial that join is called on the thread that is running.
+                    # The observer object itself is not the thread, but manages it.
+                    # Observer.join() is the correct method.
+                    observer_to_stop.join(timeout=2) # Increased timeout slightly
+                    if observer_to_stop.is_alive():
+                        print("WARNING_ENGINE: File watcher observer thread did not terminate in time after join.")
+                    else:
+                        print("DEBUG_ENGINE: File watcher observer thread successfully joined.")
+                except Exception as e: # Catch errors during join (e.g. RuntimeError if trying to join current thread - though unlikely here)
+                    print(f"Warning_ENGINE: Error during observer.join(): {e}")
+            else:
+                print("DEBUG_ENGINE: File watcher observer was not alive when stop_file_watcher was called.")
+            
+            self._log_handler = None # Clear handler as well
+            print("File watcher stop sequence complete.")
+        # else:
+            # print("DEBUG_ENGINE: stop_file_watcher called but no observer instance to stop.")
 
     def _write_instruction_file(self, instruction: str):
         if not self.current_project or not self.dev_instructions_dir:
@@ -359,6 +385,50 @@ class OrchestrationEngine:
             if self.current_project:
                  save_project_state(self.current_project, self.current_project_state)
 
+    # --- Summarization Logic --- #
+    def _check_and_run_summarization(self):
+        if not self.current_project or not self.current_project_state or not self.gemini_client:
+            return # Cannot summarize without project/state/client
+            
+        interval = self.config.get_summarization_interval()
+        history = self.current_project_state.conversation_history
+        
+        # Trigger summarization if interval is positive and met
+        # Also summarize if context_summary is None but history exists (e.g., first load after crash)
+        should_summarize = (interval > 0 and len(history) > 0 and len(history) % interval == 0) or \
+                           (self.current_project_state.context_summary is None and len(history) > 1) # Summarize if summary missing but history exists
+
+        if should_summarize:
+            print(f"** Engine: Checking summarization need. History length: {len(history)}, Interval: {interval}. Triggered: {should_summarize} **")
+            # Simple summarization: Join last 'interval' turns (or all if summary was missing)
+            turns_to_summarize_count = interval if (interval > 0 and len(history) % interval == 0) else len(history)
+            start_index = max(0, len(history) - turns_to_summarize_count)
+            
+            text_parts = []
+            if self.current_project_state.context_summary:
+                 text_parts.append(f"Previous Summary:\n{self.current_project_state.context_summary}\n")
+            text_parts.append("New History Since Last Summary:")
+            for turn in history[start_index:]:
+                 text_parts.append(f"[{turn.sender} @ {turn.timestamp}]: {turn.message}")
+            
+            text_to_summarize = "\n".join(text_parts)
+            
+            print(f"** Engine: Attempting to summarize context ({len(text_to_summarize)} chars)... **")
+            # Consider running summarization in a separate thread if it becomes time-consuming
+            try:
+                # Use a reasonable token limit for summary, maybe from config?
+                summary = self.gemini_client.summarize_text(text_to_summarize, max_summary_tokens=500) 
+                if summary:
+                    print("** Engine: Summarization successful. Updating project state. **")
+                    self.current_project_state.context_summary = summary
+                    # We don't add this to the main visible history, it's meta-context
+                    # self._add_to_history("SYSTEM", "Conversation context summarized.") # Avoid cluttering main history
+                    save_project_state(self.current_project, self.current_project_state)
+                else:
+                    print("** Engine Warning: Summarization call returned None or empty string. **")
+            except Exception as e:
+                 print(f"** Engine Error: Summarization failed: {e} **")
+
     # --- Public Control Methods --- #
 
     def start_task(self, initial_user_instruction: Optional[str] = None):
@@ -370,6 +440,9 @@ class OrchestrationEngine:
             if not self.current_project or not self.current_project_state:
                 self._set_state(EngineState.ERROR, "Cannot start task: No project selected or state not loaded.")
                 return
+
+            # Check for summarization BEFORE calling Gemini
+            self._check_and_run_summarization() 
 
             # Determine if this is the first meaningful interaction for the current task/project state
             is_first_interaction = not self.current_project_state.conversation_history
@@ -521,41 +594,38 @@ class OrchestrationEngine:
             
             self._add_to_history("USER", user_response)
 
+            # Check for summarization BEFORE calling Gemini
+            self._check_and_run_summarization() 
+
             # Prepare for Gemini call
             current_summary = self.current_project_state.context_summary
             full_history = self.current_project_state.conversation_history
             goal = self.current_project.overall_goal
 
             if self._gemini_call_thread and self._gemini_call_thread.is_alive():
-                self._set_state(EngineState.ERROR, "Gemini call already in progress. New task aborted.")
+                self._set_state(EngineState.ERROR, "Gemini call already in progress during resume. Aborted.")
                 return
 
-            response_dict = self.gemini_client.get_next_step_from_gemini(
-                project_goal=goal,
-                current_context_summary=current_summary,
-                full_conversation_history=full_history,
-                max_history_turns=self.config.get_max_history_turns(),
-                max_context_tokens=self.config.get_max_context_tokens(),
-                cursor_log_content=None
+            result_queue = queue.Queue()
+            self._gemini_call_thread = threading.Thread(
+                target=self._call_gemini_in_thread,
+                # NOTE: Resume doesn't have 'initial_structure_overview' conceptually.
+                # It also doesn't typically use 'cursor_log_content' directly, that's processed *before* resume.
+                args=(goal, full_history, current_summary, None, None, result_queue) 
             )
-            gemini_status = response_dict.get("status")
-            gemini_content = response_dict.get("content")
+            self._gemini_call_thread.start()
 
-            if gemini_status == "INSTRUCTION":
-                if self._write_instruction_file(gemini_content):
-                    self._set_state(EngineState.RUNNING_WAITING_LOG)
-                    self._start_file_watcher()
-            elif gemini_status == "NEED_INPUT":
-                self._set_state(EngineState.PAUSED_WAITING_USER_INPUT)
-                self._add_to_history("gemini_clarification_request", gemini_content)
-                self._notify_gui("user_input_needed", gemini_content)
-            elif gemini_status == "COMPLETE":
-                self._set_state(EngineState.TASK_COMPLETE)
-                self._add_to_history("gemini", "Task marked as complete.")
-                self._notify_gui("task_complete", gemini_content)
-            elif gemini_status == "ERROR":
-                self._set_state(EngineState.ERROR, f"Gemini API Error after user input: {gemini_content}")
-                self._add_to_history("system_error", f"Gemini API Error after user input: {gemini_content}")
+            print("DEBUG_ENGINE: Thread for _call_gemini_in_thread started from resume. Waiting for queue...")
+            try:
+                gemini_response_data = result_queue.get(timeout=GEMINI_CALL_TIMEOUT_SECONDS)
+                print(f"DEBUG_ENGINE: Gemini response received from resume queue: {gemini_response_data}")
+                self._process_gemini_response(gemini_response_data)
+            except queue.Empty:
+                self._set_state(EngineState.ERROR, "Gemini call timed out during resume.")
+                print("ERROR_ENGINE: Gemini call timed out waiting for response from resume queue.")
+            except Exception as e:
+                self._set_state(EngineState.ERROR, f"Error processing Gemini response from resume queue: {e}")
+                print(f"ERROR_ENGINE: Exception processing Gemini response from resume: {traceback.format_exc()}")
 
     def pause_task(self):
         # This is a soft pause; if RUNNING_WAITING_LOG, it will continue until log is processed or explicitly stopped.

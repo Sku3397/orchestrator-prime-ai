@@ -66,6 +66,13 @@ class ConfigManager:
             print(f"Warning: Invalid value '{value}' for max_context_tokens. Using default 30000.")
             return 30000
 
+    def get_cursor_log_timeout_seconds(self) -> int:
+        return self.config.getint('ENGINE_CONFIG', 'CURSOR_LOG_TIMEOUT_SECONDS', fallback=300)
+
+    def get_summarization_interval(self) -> int:
+        """Returns the number of turns after which to trigger context summarization."""
+        return self.config.getint('SETTINGS', 'SUMMARY_INTERVAL', fallback=10)
+
     def get_config_value(self, section: str, option: str, fallback: Any = None) -> Any:
         try:
             # Ensure section exists before getting value
