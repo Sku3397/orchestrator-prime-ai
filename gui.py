@@ -1,9 +1,10 @@
 import customtkinter as ctk
 import tkinter as tk
+import os
 from tkinter import simpledialog, messagebox, filedialog
 from typing import Optional, List, Dict, Any
-from .persistence import load_projects, add_project, Project, get_project_by_name
-from .engine import OrchestrationEngine, EngineState # Assuming OrchestrationEngine is in engine.py
+from persistence import load_projects, add_project, Project, get_project_by_name
+from engine import OrchestrationEngine, EngineState # Assuming OrchestrationEngine is in engine.py
 
 class App(ctk.CTk):
     def __init__(self, engine: OrchestrationEngine):
@@ -152,7 +153,7 @@ class App(ctk.CTk):
                 self.chat_display.configure(state="normal")
                 self.chat_display.delete("1.0", "end")
                 for msg in self.engine.current_project_state.conversation_history:
-                    self.add_message(msg.get('sender', 'unknown'), msg.get('message', ''), msg.get('timestamp'))
+                    self.add_message(msg.sender, msg.message, msg.timestamp)
                 self.chat_display.configure(state="disabled")
             else:
                 messagebox.showerror("Error", f"Failed to load project '{project_name}' or its state.", parent=self)
@@ -277,65 +278,86 @@ class App(ctk.CTk):
             self.engine.shutdown() # Gracefully shutdown engine (e.g., stop file watcher)
             self.destroy()
 
-class NewProjectDialog(ctk.CTkInputDialog):
+class NewProjectDialog(ctk.CTkToplevel):
     def __init__(self, parent):
-        super().__init__(text="Enter project name:", title="Add New Project")
-        self.geometry("400x300") # Adjust size if needed
-        self.result = None
-        self._project_name = ""
-        self._workspace_path = ""
-        self._overall_goal = ""
-
-        # Override default input dialog structure
-        self._title_label.pack_forget()
-        self._entry.pack_forget()
-        self._ok_button.pack_forget()
-        self._cancel_button.pack_forget()
-
-        ctk.CTkLabel(self._top_level, text="Project Name:").pack(pady=(10,0), padx=20, anchor="w")
-        self.name_entry = ctk.CTkEntry(self._top_level, width=360)
-        self.name_entry.pack(pady=(0,10), padx=20, fill="x")
-
-        ctk.CTkLabel(self._top_level, text="Workspace Root Path:").pack(pady=(5,0), padx=20, anchor="w")
-        self.path_frame = ctk.CTkFrame(self._top_level, fg_color="transparent")
-        self.path_frame.pack(pady=(0,10), padx=20, fill="x")
-        self.path_entry = ctk.CTkEntry(self.path_frame, width=300) # Adjust width
-        self.path_entry.pack(side="left", fill="x", expand=True)
-        self.browse_button = ctk.CTkButton(self.path_frame, text="Browse...", width=50, command=self.browse_path)
-        self.browse_button.pack(side="left", padx=(5,0))
-
-        ctk.CTkLabel(self._top_level, text="Overall Goal:").pack(pady=(5,0), padx=20, anchor="w")
-        self.goal_entry = ctk.CTkTextbox(self._top_level, height=80, activate_scrollbars=True)
-        self.goal_entry.pack(pady=(0,10), padx=20, fill="x", expand=True)
-
-        self.ok_button_custom = ctk.CTkButton(self._top_level, text="OK", command=self._ok_event_custom)
-        self.ok_button_custom.pack(side="right", padx=(5,20), pady=10)
-        self.cancel_button_custom = ctk.CTkButton(self._top_level, text="Cancel", command=self._cancel_event_custom)
-        self.cancel_button_custom.pack(side="right", padx=5, pady=10)
+        super().__init__(parent)
         
-        self.name_entry.focus() # Set focus to the first entry
-        self.grab_set() # Make modal
-        self.wait_window() # Wait for window to close
+        self.title("Add New Project")
+        self.geometry("400x350")
+        
+        self.result = None
+        self._project_name_custom = ""
+        self._workspace_path_custom = ""
+        self._overall_goal_custom = ""
+
+        self.grid_columnconfigure(0, weight=1)
+
+        current_row = 0
+        ctk.CTkLabel(self, text="Project Name:").grid(row=current_row, column=0, padx=20, pady=(10,0), sticky="w")
+        current_row += 1
+        self.name_entry = ctk.CTkEntry(self, width=360)
+        self.name_entry.grid(row=current_row, column=0, padx=20, pady=(0,10), sticky="ew")
+        
+        current_row += 1
+        ctk.CTkLabel(self, text="Workspace Root Path:").grid(row=current_row, column=0, padx=20, pady=(5,0), sticky="w")
+        current_row += 1
+        self.path_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.path_frame.grid(row=current_row, column=0, padx=20, pady=(0,10), sticky="ew")
+        self.path_frame.grid_columnconfigure(0, weight=1)
+        self.path_entry = ctk.CTkEntry(self.path_frame) 
+        self.path_entry.pack(side="left", fill="x", expand=True, padx=(0,5))
+        self.browse_button = ctk.CTkButton(self.path_frame, text="Browse...", width=80, command=self.browse_path)
+        self.browse_button.pack(side="left", fill="none", expand=False)
+
+        current_row += 1
+        ctk.CTkLabel(self, text="Overall Goal:").grid(row=current_row, column=0, padx=20, pady=(5,0), sticky="w")
+        current_row += 1
+        self.goal_entry = ctk.CTkTextbox(self, height=100, activate_scrollbars=True)
+        self.goal_entry.grid(row=current_row, column=0, padx=20, pady=(0,10), sticky="nsew")
+        self.grid_rowconfigure(current_row, weight=1) 
+
+        current_row += 1
+        self.button_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.button_frame.grid(row=current_row, column=0, padx=20, pady=10, sticky="e")
+        self.ok_button_custom = ctk.CTkButton(self.button_frame, text="OK", width=80, command=self._ok_event_custom)
+        self.ok_button_custom.pack(side="right", padx=(5,0))
+        self.cancel_button_custom = ctk.CTkButton(self.button_frame, text="Cancel", width=80, command=self._cancel_event_custom)
+        self.cancel_button_custom.pack(side="right")
+        
+        # Make modal - TEMPORARILY DISABLED FOR DEBUGGING
+        # self.grab_set() 
+        self.name_entry.focus()
+        # self.wait_window()
 
     def browse_path(self):
-        path = filedialog.askdirectory(parent=self._top_level)
+        path = filedialog.askdirectory(parent=self)
         if path:
             self.path_entry.delete(0, "end")
             self.path_entry.insert(0, path)
 
     def _ok_event_custom(self, event=None):
-        self._project_name = self.name_entry.get().strip()
-        self._workspace_path = self.path_entry.get().strip()
-        self._overall_goal = self.goal_entry.get("1.0", "end-1c").strip()
+        # DEBUG: Print values before validation
+        name_val = self.name_entry.get()
+        path_val = self.path_entry.get()
+        goal_val = self.goal_entry.get("1.0", "end-1c")
+        print(f"DEBUG: _ok_event_custom: Name='{name_val}', Path='{path_val}', Goal='{goal_val}'")
 
-        if not self._project_name or not self._workspace_path or not self._overall_goal:
-            messagebox.showerror("Input Error", "All fields are required.", parent=self._top_level)
-            return
-        if not os.path.isdir(self._workspace_path):
-            messagebox.showerror("Input Error", "Selected workspace path is not a valid directory.", parent=self._top_level)
-            return
+        self._project_name_custom = name_val.strip()
+        self._workspace_path_custom = path_val.strip()
+        self._overall_goal_custom = goal_val.strip()
 
-        self.result = (self._project_name, self._workspace_path, self._overall_goal)
+        print(f"DEBUG: _ok_event_custom (stripped): Name='{self._project_name_custom}', Path='{self._workspace_path_custom}', Goal='{self._overall_goal_custom}'")
+
+        if not self._project_name_custom or not self._workspace_path_custom or not self._overall_goal_custom:
+            print("DEBUG: Validation failed - Fields empty.")
+            messagebox.showerror("Input Error", "All fields are required.", parent=self)
+            return
+        if not os.path.isdir(self._workspace_path_custom): # Use the custom var
+            messagebox.showerror("Input Error", "Selected workspace path is not a valid directory.", parent=self)
+            return
+        
+        self.result = (self._project_name_custom, self._workspace_path_custom, self._overall_goal_custom)
+        
         self.grab_release()
         self.destroy()
 

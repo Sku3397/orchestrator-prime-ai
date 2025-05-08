@@ -1,0 +1,142 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+#  Usually these files are written by a PyInstaller script;
+#  If you are not using PyInstaller, you can remove this section.
+*.spec
+*.pyzw
+*.pyz
+*.pkg
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+*.po
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+#   For a library or application, you probably want to ignore these files since the library
+#   is to be tested with various versions of Python rather than alternative implementations.
+#   .python-version
+
+# PEP 582; __pypackages__
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype staticNEW
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+# Orchestrator Prime specific
+app_data/projects.json  # If you want user's project list to be local
+config.ini              # Contains API key, keep local
+*.db                    # Any SQLite databases for app state
+orchestrator_prime.log  # Internal logs of the app itself
+dev_logs/               # Logs from Cursor when Orchestrator Prime is RUNNING
+dev_instructions/       # Instructions for Cursor when Orchestrator Prime is RUNNING
+.orchestrator_state/    # Stored state for individual projects 

@@ -1,0 +1,26 @@
+# Virtual Environment
+venv/
+__pycache__/
+*.pyc
+
+# OS-specific
+.DS_Store
+*.swp
+*.swo
+
+# IDE specific
+.vscode/
+.idea/
+
+# Application data & secrets
+app_data/projects.json
+config.ini
+
+# Development logs and instructions (dynamically generated)
+dev_logs/
+dev_instructions/
+
+# Build artifacts (if any in future)
+build/
+dist/
+*.egg-info/ 

@@ -4,23 +4,53 @@ import shutil
 from datetime import datetime
 from enum import Enum, auto
 from typing import Optional, Callable, List, Dict, Any
+import threading # For GUI updates from watchdog thread
+import queue # For getting results from threaded Gemini calls
+import uuid
 
-from .models import Project, ProjectState
-from .persistence import load_project_state, save_project_state, get_project_by_id, load_projects
-from .gemini_comms import GeminiCommunicator
-from .config_manager import ConfigManager
+from models import Project, ProjectState, Turn # MODIFIED
+from persistence import load_project_state, save_project_state, get_project_by_id, load_projects, PersistenceError # MODIFIED
+from gemini_comms import GeminiCommunicator # MODIFIED
+from config_manager import ConfigManager # MODIFIED
 
 # Watchdog is an external dependency, ensure it's handled if not available
 try:
     from watchdog.observers import Observer
-    from watchdog.events import FileSystemEventHandler
+    from watchdog.events import FileSystemEventHandler, FileCreatedEvent
 except ImportError:
     Observer = None
     FileSystemEventHandler = None
     print("WARNING (Engine): watchdog library not found. File watching will be disabled.")
 
+# --- Status Constants ---
+STATUS_IDLE = "IDLE"
+STATUS_LOADING_PROJECT = "LOADING_PROJECT"
+STATUS_PROJECT_LOADED = "PROJECT_LOADED"
+STATUS_RUNNING_CALLING_GEMINI = "RUNNING_CALLING_GEMINI"
+STATUS_RUNNING_WAITING_LOG = "RUNNING_WAITING_LOG"
+STATUS_PROCESSING_LOG = "PROCESSING_LOG"
+STATUS_PAUSED_WAITING_USER_INPUT = "PAUSED_WAITING_USER_INPUT"
+STATUS_SUMMARIZING_CONTEXT = "SUMMARIZING_CONTEXT"
+STATUS_TASK_COMPLETE = "TASK_COMPLETE"
+
+# --- Error Status Constants ---
+STATUS_ERROR = "ERROR" # Generic error
+STATUS_ERROR_API_AUTH = "ERROR_API_AUTH" # Specific to API key issues
+STATUS_ERROR_GEMINI_CALL = "ERROR_GEMINI_CALL" # General error from Gemini
+STATUS_ERROR_GEMINI_TIMEOUT = "ERROR_GEMINI_TIMEOUT" # Gemini call timed out
+STATUS_ERROR_FILE_WRITE = "ERROR_FILE_WRITE" # Cannot write instruction/state
+STATUS_ERROR_FILE_READ_LOG = "ERROR_FILE_READ_LOG" # Cannot read cursor log
+STATUS_ERROR_PERSISTENCE = "ERROR_PERSISTENCE" # Error loading/saving state/projects
+STATUS_ERROR_WATCHER = "ERROR_WATCHER" # Watchdog failed to start/run
+STATUS_ERROR_CURSOR_TIMEOUT = "ERROR_CURSOR_TIMEOUT" # Cursor log timeout
+
+# Timeout for Gemini calls in seconds
+GEMINI_CALL_TIMEOUT_SECONDS = 120 # 2 minutes
+CURSOR_LOG_TIMEOUT_SECONDS = 300 # 5 minutes
+
 class EngineState(Enum):
     IDLE = auto()
+    LOADING_PROJECT = auto()
     PROJECT_SELECTED = auto() # Ready to start a task for the selected project
     RUNNING_WAITING_INITIAL_GEMINI = auto() # After user starts, before first Gemini call
     RUNNING_WAITING_LOG = auto() # Instruction sent to Cursor, waiting for cursor_step_output.txt
@@ -31,18 +61,30 @@ class EngineState(Enum):
     ERROR = auto()
 
 class OrchestrationEngine:
+    CURSOR_SOP_PROMPT_TEXT = """... (Full SOP content as defined previously) ...""" # Keep SOP text here
+
     def __init__(self, gui_update_callback: Optional[Callable[[str, Any], None]] = None):
         self.current_project: Optional[Project] = None
         self.current_project_state: Optional[ProjectState] = None
         self.state: EngineState = EngineState.IDLE
-        self.gemini_comms = GeminiCommunicator() # Might raise if config is bad
-        self.config_manager = ConfigManager()
+        self.gemini_client = GeminiCommunicator() # Might raise if config is bad
+        self.config = ConfigManager()
         self.gui_update_callback = gui_update_callback # To notify GUI of changes
         self.file_observer: Optional[Observer] = None
-        self.file_event_handler: Optional[LogFileHandler] = None
+        self._log_handler: Optional[LogFileCreatedHandler] = None # Renamed for clarity
         self.dev_logs_dir: str = ""
         self.dev_instructions_dir: str = ""
         self.last_error_message: Optional[str] = None
+        self._last_critical_error: Optional[str] = None # Initialize the missing attribute
+
+        self._engine_lock = threading.Lock() # Main lock for critical state modifications
+        self._gemini_call_thread: Optional[threading.Thread] = None
+        print("OrchestrationEngine initialized.")
+        if self.gemini_client:
+            print("GeminiCommunicator initialized successfully.")
+        else:
+            print("GeminiCommunicator initialization failed. Engine will be in a broken state.")
+            self._last_critical_error = "GeminiCommunicator initialization failed."
 
     def _notify_gui(self, message_type: str, data: Any = None):
         if self.gui_update_callback:
@@ -69,52 +111,73 @@ class OrchestrationEngine:
                     save_project_state(self.current_project, self.current_project_state)
 
     def set_active_project(self, project: Project) -> bool:
-        if self.state not in [EngineState.IDLE, EngineState.PROJECT_SELECTED, EngineState.TASK_COMPLETE, EngineState.ERROR]:
-            self._set_state(EngineState.ERROR, "Cannot change project while a task is active or paused.")
-            return False
-        
-        self.current_project = project
-        project_state = load_project_state(project)
-        if not project_state:
-            self._set_state(EngineState.ERROR, f"Failed to load state for project: {project.name}")
-            self.current_project = None # Clear project if state fails
-            return False
-        
-        self.current_project_state = project_state
-        self.dev_logs_dir = os.path.join(project.workspace_root_path, self.config_manager.get_default_dev_logs_dir())
-        self.dev_instructions_dir = os.path.join(project.workspace_root_path, self.config_manager.get_default_dev_instructions_dir())
-        
-        # Ensure directories exist for the project
-        os.makedirs(self.dev_logs_dir, exist_ok=True)
-        os.makedirs(os.path.join(self.dev_logs_dir, "processed"), exist_ok=True)
-        os.makedirs(self.dev_instructions_dir, exist_ok=True)
-        
-        self._set_state(EngineState.PROJECT_SELECTED)
-        self._notify_gui("project_loaded", {
-            "project_name": project.name,
-            "goal": project.overall_goal,
-            "history": self.current_project_state.conversation_history,
-            "status": self.current_project_state.current_status
-        })
-        print(f"Active project set to: {project.name}")
-        # Attempt to sync engine state with loaded project state
-        try:
-            loaded_engine_state = EngineState[self.current_project_state.current_status]
-            if loaded_engine_state == EngineState.PAUSED_WAITING_USER_INPUT or loaded_engine_state == EngineState.ERROR: # States we can resume from or reflect
-                 self._set_state(loaded_engine_state)
-            elif loaded_engine_state != EngineState.IDLE and loaded_engine_state != EngineState.PROJECT_SELECTED:
-                 # If it was running, set to idle or error, as we can't resume a running state directly on load
-                 self._set_state(EngineState.PROJECT_SELECTED) # Or ERROR with a message
-                 self.current_project_state.current_status = EngineState.PROJECT_SELECTED.name
-                 save_project_state(self.current_project, self.current_project_state)
+        with self._engine_lock:
+            if hasattr(self, '_last_critical_error') and self._last_critical_error:
+                self._notify_gui("error", self._last_critical_error)
+                self._set_state(EngineState.ERROR, self._last_critical_error)
+                return False
 
-        except KeyError:
-            print(f"Warning: Loaded project state '{self.current_project_state.current_status}' is not a valid EngineState. Resetting to PROJECT_SELECTED.")
-            self._set_state(EngineState.PROJECT_SELECTED)
-            self.current_project_state.current_status = EngineState.PROJECT_SELECTED.name
+            self._set_state(EngineState.LOADING_PROJECT, f"Loading project: {project.name}...")
+            self.current_project = project
+            try:
+                loaded_state = load_project_state(project)
+            except Exception as e:
+                print(f"Error loading project state for {project.name}: {e}")
+                self._set_state(EngineState.ERROR, f"Persistence Error: Failed to load state for {project.name}: {e}")
+                self.current_project = None # Clear project if state loading fails critically
+                return False
+
+            if loaded_state:
+                self.current_project_state = loaded_state
+                if self.current_project_state.current_status not in [EngineState.PAUSED_WAITING_USER_INPUT.name, EngineState.IDLE.name, EngineState.PROJECT_SELECTED.name, EngineState.TASK_COMPLETE.name] and not self.current_project_state.current_status.startswith("ERROR"):
+                     self.current_project_state.current_status = EngineState.PROJECT_SELECTED.name
+            else: 
+                proj_id = project.id if project.id else str(uuid.uuid4()) # Assuming project might lack an ID initially
+                if not project.id:
+                    project.id = proj_id # Assign back if generated
+                    # TODO: Need to save the updated project list if ID was generated!
+                self.current_project_state = ProjectState(project_id=proj_id)
+            
+            try: # Ensure directories exist
+                dev_logs_base = os.path.join(project.workspace_root_path, self.config.get_default_dev_logs_dir())
+                dev_instructions_base = os.path.join(project.workspace_root_path, self.config.get_default_dev_instructions_dir())
+                os.makedirs(dev_logs_base, exist_ok=True)
+                os.makedirs(os.path.join(dev_logs_base, "processed"), exist_ok=True)
+                os.makedirs(dev_instructions_base, exist_ok=True)
+            except OSError as e:
+                self._set_state(EngineState.ERROR, f"File Write Error: Failed to create project directories for {project.name}: {e}")
+                return False
+
+            self.dev_logs_dir = dev_logs_base
+            self.dev_instructions_dir = dev_instructions_base
+            
+            final_state_to_set = EngineState.PROJECT_SELECTED
+            
+            try:
+                loaded_engine_state_name = self.current_project_state.current_status
+                if loaded_engine_state_name == EngineState.PAUSED_WAITING_USER_INPUT.name:
+                     final_state_to_set = EngineState.PAUSED_WAITING_USER_INPUT
+                elif loaded_engine_state_name == EngineState.ERROR.name:
+                     final_state_to_set = EngineState.ERROR 
+
+            except KeyError:
+                print(f"Warning: Loaded project state '{self.current_project_state.current_status}' is not a valid EngineState name? Resetting to PROJECT_SELECTED.")
+                final_state_to_set = EngineState.PROJECT_SELECTED
+                self.current_project_state.current_status = EngineState.PROJECT_SELECTED.name
+            
+            self._set_state(final_state_to_set)
+            
             save_project_state(self.current_project, self.current_project_state)
 
-        return True
+            self._notify_gui("project_loaded", {
+                "project_name": project.name,
+                "goal": project.overall_goal,
+                "history": self.current_project_state.conversation_history,
+                "status": self.current_project_state.current_status
+            })
+            print(f"Active project set to: {project.name}")
+
+            return True
 
     def _start_file_watcher(self):
         if not Observer or not FileSystemEventHandler: # Watchdog not available
@@ -127,12 +190,12 @@ class OrchestrationEngine:
         if self.file_observer:
             self.stop_file_watcher() # Stop existing one first
 
-        self.file_event_handler = LogFileHandler(self._on_log_file_created)
+        self._log_handler = LogFileCreatedHandler(self)
         self.file_observer = Observer()
         try:
             # Ensure the directory exists before watching
             os.makedirs(self.dev_logs_dir, exist_ok=True)
-            self.file_observer.schedule(self.file_event_handler, self.dev_logs_dir, recursive=False)
+            self.file_observer.schedule(self._log_handler, self.dev_logs_dir, recursive=False)
             self.file_observer.start()
             print(f"File watcher started on: {self.dev_logs_dir}")
         except Exception as e:
@@ -149,7 +212,7 @@ class OrchestrationEngine:
                 print(f"Error stopping file watcher: {e}")
             finally:
                 self.file_observer = None
-                self.file_event_handler = None
+                self._log_handler = None
 
     def _write_instruction_file(self, instruction: str):
         if not self.current_project or not self.dev_instructions_dir:
@@ -173,7 +236,7 @@ class OrchestrationEngine:
     def _on_log_file_created(self, log_file_path: str):
         print(f"Log file event: {log_file_path}")
         # Filter out events for non-target files or subdirectories (like 'processed')
-        if os.path.basename(log_file_path) != "cursor_step_output.txt" or \ 
+        if os.path.basename(log_file_path) != "cursor_step_output.txt" or \
            os.path.dirname(log_file_path) != self.dev_logs_dir : 
             return
 
@@ -215,10 +278,12 @@ class OrchestrationEngine:
         self._set_state(EngineState.RUNNING_CALLING_GEMINI)
         self._notify_gui("status_update", "Contacting Dev Manager (Gemini)...")
 
-        gemini_status, gemini_content = self.gemini_comms.get_next_step_from_gemini(
+        gemini_status, gemini_content = self.gemini_client.get_next_step_from_gemini(
             project_goal=self.current_project.overall_goal,
-            context_summary=self.current_project_state.context_summary, # Placeholder
-            recent_history=self.current_project_state.conversation_history,
+            current_context_summary=self.current_project_state.context_summary,
+            full_conversation_history=self.current_project_state.conversation_history,
+            max_history_turns=self.config.get_max_history_turns(),
+            max_context_tokens=self.config.get_max_context_tokens(),
             cursor_log_content=log_content
         )
 
@@ -243,9 +308,13 @@ class OrchestrationEngine:
 
     def _add_to_history(self, sender: str, message: str):
         if self.current_project_state:
-            entry = {"sender": sender, "timestamp": datetime.now().isoformat(), "message": message}
-            self.current_project_state.conversation_history.append(entry)
-            self._notify_gui("new_message", entry)
+            new_turn = Turn(sender=sender, message=message) # Create Turn object
+            # Timestamp is handled by Turn's default factory
+            self.current_project_state.conversation_history.append(new_turn) # Append Turn object
+            # Notify GUI with a dict representation for compatibility with add_message signature
+            self._notify_gui("new_message", {"sender": new_turn.sender, 
+                                             "message": new_turn.message, 
+                                             "timestamp": new_turn.timestamp})
             # Save state after adding to history
             if self.current_project:
                  save_project_state(self.current_project, self.current_project_state)
@@ -270,11 +339,13 @@ class OrchestrationEngine:
         if initial_user_instruction:
              self._add_to_history("user", initial_user_instruction)
 
-        gemini_status, gemini_content = self.gemini_comms.get_next_step_from_gemini(
+        gemini_status, gemini_content = self.gemini_client.get_next_step_from_gemini(
             project_goal=self.current_project.overall_goal,
-            context_summary=self.current_project_state.context_summary, # Placeholder
-            recent_history=self.current_project_state.conversation_history, # May include initial_user_instruction
-            cursor_log_content=None # No log from Cursor initially
+            current_context_summary=self.current_project_state.context_summary,
+            full_conversation_history=self.current_project_state.conversation_history,
+            max_history_turns=self.config.get_max_history_turns(),
+            max_context_tokens=self.config.get_max_context_tokens(),
+            cursor_log_content=None
         )
 
         if gemini_status == "INSTRUCTION":
@@ -306,11 +377,13 @@ class OrchestrationEngine:
         self._set_state(EngineState.RUNNING_CALLING_GEMINI)
         self._notify_gui("status_update", "Sending your input to Dev Manager (Gemini)...")
 
-        gemini_status, gemini_content = self.gemini_comms.get_next_step_from_gemini(
+        gemini_status, gemini_content = self.gemini_client.get_next_step_from_gemini(
             project_goal=self.current_project.overall_goal,
-            context_summary=self.current_project_state.context_summary,
-            recent_history=self.current_project_state.conversation_history,
-            cursor_log_content=None # No new log from Cursor, Gemini is responding to user input
+            current_context_summary=self.current_project_state.context_summary,
+            full_conversation_history=self.current_project_state.conversation_history,
+            max_history_turns=self.config.get_max_history_turns(),
+            max_context_tokens=self.config.get_max_context_tokens(),
+            cursor_log_content=None
         )
 
         if gemini_status == "INSTRUCTION":
@@ -369,28 +442,28 @@ class OrchestrationEngine:
 
 # --- FileSystemEventHandler for Watchdog --- #
 if FileSystemEventHandler: # Only define if watchdog is available
-    class LogFileHandler(FileSystemEventHandler):
-        def __init__(self, callback: Callable[[str], None]):
-            super().__init__()
-            self.callback = callback
+    class LogFileCreatedHandler(FileSystemEventHandler):
+        def __init__(self, engine: 'OrchestrationEngine'):
+            self.engine = engine
 
         def on_created(self, event):
-            if not event.is_directory and event.src_path.endswith("cursor_step_output.txt"):
-                # Debounce or delay slightly in case of rapid partial writes, though watchdog often handles this.
-                # time.sleep(0.1) # Optional: small delay
-                self.callback(event.src_path)
-        
-        def on_modified(self, event):
-            # Sometimes files are created empty then modified, or modified multiple times rapidly.
-            # on_created is often more reliable for "new file appeared".
-            # If on_created is missed, on_modified could be a fallback but needs careful handling to avoid multiple triggers.
-            if not event.is_directory and event.src_path.endswith("cursor_step_output.txt"):
-                # Check if the engine is expecting it, to avoid processing if it was an on_created event handled already
-                # This might be complex. For simplicity, relying on on_created for now.
-                # print(f"LogFileHandler: Detected modification of {event.src_path}")
-                pass 
+            if not event.is_directory and os.path.basename(event.src_path) == "cursor_step_output.txt":
+                # Check if the event is for the expected log file in the active project's dev_logs directory
+                if self.engine.current_project and self.engine.current_project_state:
+                    expected_dir = os.path.join(self.engine.current_project.workspace_root_path, self.engine.config.get_default_dev_logs_dir())
+                    if os.path.dirname(event.src_path) == expected_dir:
+                        print(f"Engine Watcher: Detected log file: {event.src_path}")
+                        self.engine._cancel_cursor_timeout()
+                        time.sleep(0.5) 
+                        self.engine._handle_log_file_created(event.src_path)
+                    else:
+                        print(f"Engine Watcher: Ignored log file in unexpected directory: {event.src_path}")
+                else:
+                    print(f"Engine Watcher: Ignored log file, no active project: {event.src_path}")
+            # else:
+                # print(f"Engine Watcher: Ignored event: {event.src_path} (is_directory: {event.is_directory}, name: {os.path.basename(event.src_path)})")
 else:
-    LogFileHandler = None # Placeholder if watchdog not imported
+    LogFileCreatedHandler = None # Placeholder if watchdog not imported
 
 # Example Usage (illustrative, assumes GUI/callbacks are handled elsewhere)
 if __name__ == '__main__':
@@ -443,10 +516,10 @@ if __name__ == '__main__':
             print(f"Simulated log file created: {log_file}")
             
             # Manually trigger the handler for this example if watcher is not running or for direct test
-            if LogFileHandler: # Check if class is defined
-                engine._on_log_file_created(log_file) # Manually call for testing flow
+            if LogFileCreatedHandler: # Check if class is defined
+                engine._process_cursor_log(log_file) # Manually call for testing flow
             else:
-                print("Watchdog not available, manual trigger of _on_log_file_created needed for full test.")
+                print("Watchdog not available, manual trigger of _process_cursor_log needed for full test.")
 
             # Wait for Gemini call and next instruction (simulated)
             time.sleep(5) # Simulate Gemini processing time
@@ -460,8 +533,8 @@ if __name__ == '__main__':
                 second_log_file = os.path.join(engine.dev_logs_dir, "cursor_step_output.txt")
                 with open(second_log_file, "w") as f:
                     f.write("SUCCESS: Task fully completed as per instructions.")
-                if LogFileHandler:
-                    engine._on_log_file_created(second_log_file)
+                if LogFileCreatedHandler:
+                    engine._process_cursor_log(second_log_file)
                 time.sleep(5)
                 print(f"Engine state after second log: {engine.state.name}")
 
@@ -475,5 +548,16 @@ if __name__ == '__main__':
     engine.shutdown()
     # Clean up mock directory
     # shutil.rmtree(mock_project_dir)
+    # print(f"Cleaned up {mock_project_dir}")
+    print("OrchestrationEngine example finished.") 
+    engine.shutdown()
+    # Clean up mock directory
+    # shutil.rmtree(mock_project_dir)
+    # print(f"Cleaned up {mock_project_dir}")
+    print("OrchestrationEngine example finished.") 
+    # print(f"Cleaned up {mock_project_dir}")
+    print("OrchestrationEngine example finished.") 
+    # print(f"Cleaned up {mock_project_dir}")
+    print("OrchestrationEngine example finished.") 
     # print(f"Cleaned up {mock_project_dir}")
     print("OrchestrationEngine example finished.") 

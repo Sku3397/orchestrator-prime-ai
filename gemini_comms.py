@@ -1,7 +1,12 @@
 import google.generativeai as genai
-from .config_manager import ConfigManager
+import google.api_core.exceptions # For specific API errors
+import google.generativeai.types # Added for exception handling
+from config_manager import ConfigManager
 import os
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
+from models import Turn
+import time
+from dataclasses import dataclass # Assuming Turn is defined elsewhere or add here
 
 # Standard Operating Procedure for Cursor (Dev Engineer)
 CURSOR_SOP_PROMPT = """\
@@ -70,138 +75,315 @@ CURSOR_SOP_PROMPT = """\
 *   **Wait for your turn.** Do not act out of sequence.
 """
 
+GEMINI_MARKER_NEED_INPUT = "NEED_USER_INPUT:"
+GEMINI_MARKER_TASK_COMPLETE = "TASK_COMPLETE"
+GEMINI_MARKER_SYSTEM_ERROR = "SYSTEM_ERROR:"
+
+# --- MOCKING FOR TESTING ---
+MOCK_GEMINI_ENABLED = False 
+mock_main_call_count = 0
+mock_summary_call_count = 0
+# --- END MOCKING ---
+
+# Add Turn dataclass definition if not imported from models.py
+# from models import Turn # Uncomment if models.py exists and is correct
+@dataclass
+class Turn: # Temporary definition if models.py import fails
+    sender: str
+    message: str
+    timestamp: str = ""
+    metadata: Optional[Dict[str, Any]] = None
+
 class GeminiCommunicator:
     def __init__(self):
+        self.model = None
+        self.model_name = "Unknown"
+        self.config = ConfigManager()
+        api_key = self.config.get_api_key()
+        self.model_name = self.config.get_gemini_model()
+
+        if MOCK_GEMINI_ENABLED:
+            print("GeminiCommunicator initialized in MOCK mode.")
+            return
+
+        if not api_key or api_key == 'YOUR_API_KEY_HERE':
+            print("ERROR (GeminiComms): API Key not configured in config.ini. Live mode disabled.")
+            # Potentially raise an error or set a flag indicating disabled state
+            return
+
         try:
-            # Assuming config_manager.py is in the same directory or accessible in PYTHONPATH
-            # Adjust path if orchestrator_prime is not the root for execution context
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            config_path = os.path.join(current_dir, 'config.ini') 
-            if not os.path.exists(config_path) and os.path.basename(current_dir) == "orchestrator_prime":
-                 # Try one level up if running from within orchestrator_prime dir and config is at root of it
-                 config_path = os.path.join(os.path.dirname(current_dir), 'orchestrator_prime', 'config.ini')
-            
-            # A more robust way if we know the project root or how main.py is run:
-            # For now, let's assume config.ini is discoverable by ConfigManager's default.
-            self.config_manager = ConfigManager() 
-            api_key = self.config_manager.get_api_key()
-            if not api_key or api_key == "YOUR_API_KEY_HERE":
-                raise ValueError("API key not configured in config.ini or is placeholder.")
             genai.configure(api_key=api_key)
-            # TODO: Allow model selection from config
-            self.model = genai.GenerativeModel('gemini-1.5-flash-latest') # Or your preferred model
-        except FileNotFoundError as e:
-            print(f"ERROR (GeminiComms): Configuration file not found. {e}")
-            raise
-        except ValueError as e:
-            print(f"ERROR (GeminiComms): Configuration error. {e}")
-            raise
-        except Exception as e:
-            print(f"ERROR (GeminiComms): Failed to initialize Gemini client: {e}")
-            raise
-
-    def get_next_step_from_gemini(self, project_goal: str, 
-                                  context_summary: Optional[str], 
-                                  recent_history: List[dict], 
-                                  cursor_log_content: Optional[str]) -> tuple[str, str]:
-        """ 
-        Communicates with Gemini to get the next step.
-        Returns a tuple: (status_code, content)
-        status_code can be: INSTRUCTION, NEED_INPUT, TASK_COMPLETE, ERROR
-        """
-        # TODO: Implement actual context summarization logic
-        # For now, context_summary is a placeholder.
-        _ = context_summary # Mark as used
-
-        # Construct the prompt
-        prompt_parts = [
-            "You are Dev Manager, an AI assistant orchestrating a development task with a Dev Engineer (a large language model like Cursor).",
-            f"The overall project goal is: {project_goal}",
-        ]
-
-        if recent_history:
-            prompt_parts.append("\nRecent conversation history (User is the human, you are Dev Manager, Dev Engineer is Cursor via log files):")
-            for entry in recent_history[-10:]: # Last 10 turns
-                if entry.get('sender') == 'user':
-                    prompt_parts.append(f"User: {entry['message']}")
-                elif entry.get('sender') == 'gemini': # This is you, the Dev Manager
-                    prompt_parts.append(f"You (Dev Manager): {entry['message']}")
-                elif entry.get('sender') == 'status': # Internal status messages
-                    prompt_parts.append(f"System Status: {entry['message']}")
-                # Dev Engineer (Cursor) input is via cursor_log_content
-
-        if cursor_log_content:
-            prompt_parts.append(f"\nThe Dev Engineer (Cursor) has provided the following log from its last step (`cursor_step_output.txt`):
----
-{cursor_log_content}
----")
-        else:
-            prompt_parts.append("\nThis is the first instruction or the Dev Engineer has not yet provided a log.")
-
-        prompt_parts.extend([
-            "\nBased on the goal, history, and the Dev Engineer's latest log (if any), provide the *next single, actionable instruction* for the Dev Engineer.",
-            "If the Dev Engineer indicated `CLARIFICATION_NEEDED: [Question]`, answer their question and provide the next instruction.",
-            "If the Dev Engineer indicated `ERROR:`, analyze the error and provide guidance or a corrected instruction.",
-            "If you need input from the human user before proceeding, respond ONLY with `NEED_USER_INPUT: [Your question for the user]`.",
-            "If the overall project goal appears to be complete based on the Dev Engineer's logs and the history, respond ONLY with `TASK_COMPLETE`.",
-            "Instructions should be clear, concise, and broken down into manageable steps if complex. Assume the Dev Engineer has access to the project workspace and can read/write files and run terminal commands.",
-            "Focus on one discrete step at a time for the Dev Engineer.",
-            "Do NOT ask the Dev Engineer to monitor files or wait for you; the orchestrator handles that. Just give the next instruction."
-        ])
-        
-        full_prompt = "\n".join(prompt_parts)
-        # print(f"\n--- PROMPT TO GEMINI ---\n{full_prompt}\n------------------------\n") # For debugging
-
-        try:
-            response = self.model.generate_content(full_prompt)
-            response_text = response.text.strip()
-            # print(f"\n--- RESPONSE FROM GEMINI ---\n{response_text}\n----------------------------\n") # For debugging
-
-            if response_text.startswith("NEED_USER_INPUT:"):
-                return "NEED_INPUT", response_text.replace("NEED_USER_INPUT:", "", 1).strip()
-            elif response_text == "TASK_COMPLETE":
-                return "COMPLETE", "Project goal achieved."
-            elif not response_text:
-                 return "ERROR", "Gemini returned an empty response."
+            # Check available models supporting 'generateContent'
+            print("--- Checking Available Gemini Models (supporting generateContent) ---")
+            models_found = False
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    print(f"  - {m.name}")
+                    models_found = True
+            if not models_found:
+                print("  WARNING: No models found supporting 'generateContent' with this API key/setup.")
             else:
-                # Assume anything else is an instruction
-                return "INSTRUCTION", response_text
-            
-        except Exception as e:
-            print(f"Error calling Gemini API: {e}")
-            # Check for specific Google API errors if the library provides them
-            # For example, if hasattr(e, 'message') or specific error types
-            # Safety reasons can be complex to parse, often in response.prompt_feedback
-            # For now, a general error message
-            if hasattr(response, 'prompt_feedback') and response.prompt_feedback.block_reason:
-                 return "ERROR", f"Gemini API request blocked. Reason: {response.prompt_feedback.block_reason}. Details: {response.prompt_feedback.safety_ratings}"
-            return "ERROR", f"Failed to get response from Gemini: {str(e)}"
+                 # Attempt to load the configured model
+                print(f"--- Attempting to load configured model: {self.model_name} ---")
+                self.model = genai.GenerativeModel(self.model_name)
+                # Optionally, make a small test call like count_tokens if available
+                print(f"Successfully configured Gemini and loaded model: {self.model_name}")
 
-# Example Usage (optional)
+        except Exception as e:
+            print(f"ERROR (GeminiComms): Failed to configure Gemini or load model '{self.model_name}'. Error: {type(e).__name__} - {e}")
+            self.model = None # Ensure model is None if init fails
+
+    def _estimate_tokens(self, text: str) -> int:
+        if not MOCK_GEMINI_ENABLED and hasattr(self, 'model') and self.model:
+            try:
+                pass 
+            except Exception as e:
+                print(f"Warning (GeminiComms): count_tokens call failed: {e}. Using rough estimate.")
+        return len(text) // 4 
+
+    def summarize_text(self, text_to_summarize: str, max_summary_tokens: int = 1000) -> Optional[str]:
+        if MOCK_GEMINI_ENABLED:
+            print(f"MOCK GEMINI (Summarizer): Summarizing text of length {len(text_to_summarize)}.")
+            time.sleep(0.1) 
+            return f"[Mock Summary of input. Original length: {len(text_to_summarize)} chars. Max tokens: {max_summary_tokens}]"
+
+        if not hasattr(self, 'model') or not self.model:
+            print("ERROR (GeminiComms Summarizer): Model not initialized (live mode & API key issue or other init failure).")
+            return None
+
+        summarization_prompt = f"""\
+Summarize the following conversation/log concisely, focusing on key decisions, completed tasks, and outstanding issues.
+Aim for brevity while retaining critical information. The summary should be suitable for providing context to an AI assistant for subsequent tasks.
+Do not add any conversational pleasantries or introductory/concluding remarks, only the summary itself.
+
+Text to Summarize:
+---
+{text_to_summarize}
+---
+Summary:"""
+        
+        try:
+            generation_config = genai.types.GenerationConfig(
+                max_output_tokens=max_summary_tokens, 
+                temperature=0.4 
+            )
+            print(f"GeminiComms: Calling live Gemini API for summarization (model: {self.model_name}).")
+            response = self.model.generate_content(summarization_prompt, generation_config=generation_config)
+            
+            if response.parts:
+                summary = response.text.strip()
+                print(f"GeminiComms: Successfully summarized text (live). Summary tokens (est): {self._estimate_tokens(summary)}")
+                return summary
+            elif response.prompt_feedback and response.prompt_feedback.block_reason:
+                reason = response.prompt_feedback.block_reason.name if hasattr(response.prompt_feedback.block_reason, 'name') else str(response.prompt_feedback.block_reason)
+                print(f"ERROR (GeminiComms Summarizer): Live API request blocked. Reason: {reason}")
+                return None
+            else:
+                print("ERROR (GeminiComms Summarizer): Live API returned an empty response for summarization.")
+                return None
+        except Exception as e:
+            print(f"ERROR (GeminiComms Summarizer): Exception during live summarization API call: {type(e).__name__} - {e}")
+            return None
+
+    def get_next_step_from_gemini(self, 
+                                  project_goal: str,
+                                  full_conversation_history: List[Turn],
+                                  current_context_summary: str,
+                                  max_history_turns: int,
+                                  max_context_tokens: int, 
+                                  cursor_log_content: Optional[str]
+                                  ) -> Dict[str, Any]:
+        if MOCK_GEMINI_ENABLED:
+            print(f"MOCK GEMINI (Main Call): Goal: '{project_goal[:30]}...'")
+            time.sleep(0.2) 
+            if not cursor_log_content: 
+                return {"status": "INSTRUCTION", "content": f"Mock Instruction (Initial for Goal: {project_goal[:30]}...)"}
+            else: 
+                return {"status": "INSTRUCTION", "content": f"Mock Instruction (Based on log: {cursor_log_content[:50]}...)"}
+
+        if not hasattr(self, 'model') or not self.model:
+            return {"status": "ERROR", "content": "Gemini model not initialized (live mode & API key issue or other init failure)."}
+
+        prompt_construction = [f"Overall Project Goal: {project_goal}\n"]
+        if current_context_summary:
+            prompt_construction.append(f"--- Previously Summarized Context ---\n{current_context_summary}\n---\n")
+        
+        recent_history_text_parts = []
+        if full_conversation_history:
+            start_index = max(0, len(full_conversation_history) - max_history_turns)
+            for turn in full_conversation_history[start_index:]:
+                sender_prefix = turn.sender 
+                if turn.sender == "USER": sender_prefix = "User (Human)"
+                elif turn.sender == "GEMINI_MANAGER": sender_prefix = "You (Dev Manager)"
+                elif turn.sender == "CURSOR_LOG_SUMMARY": sender_prefix = "Dev Engineer (Cursor Log)"
+                elif turn.sender == "ORCHESTRATOR_STATUS": sender_prefix = "System Status"
+                recent_history_text_parts.append(f"[{sender_prefix} @ {turn.timestamp}]: {turn.message}")
+        
+        log_text_part = ""
+        if cursor_log_content:
+            log_text_part = f"\n--- Latest Dev Engineer (Cursor) Log ---\n{cursor_log_content}\n---"
+
+        guidance_instructions = f"""
+Based on the overall goal, summarized context, recent history, and the Dev Engineer's latest log (if any), provide the *next single, actionable instruction* for the Dev Engineer.
+If the Dev Engineer indicated `CLARIFICATION_NEEDED:`, answer their question and provide the next instruction.
+If the Dev Engineer indicated `ERROR:`, analyze the error and provide guidance or a corrected instruction.
+If you need input from the human user before proceeding, respond ONLY with `{GEMINI_MARKER_NEED_INPUT} [Your question for the user]`.
+If the overall project goal appears to be complete based on the Dev Engineer's logs and the history, respond ONLY with `{GEMINI_MARKER_TASK_COMPLETE}`.
+If you encounter an internal problem or cannot meaningfully proceed, respond ONLY with `{GEMINI_MARKER_SYSTEM_ERROR} [Brief error description]`.
+Focus on one discrete step at a time for the Dev Engineer. Adhere to their SOP.
+"""
+        sop_context = f"\nReference: The Dev Engineer SOP is:\n{CURSOR_SOP_PROMPT}"
+        
+        def build_prompt_segment(current_prompt_list, recent_hist_parts, log_part_str, sop_str, guidance_str_local):
+            temp_prompt = list(current_prompt_list) 
+            if recent_hist_parts:
+                temp_prompt.append("\n--- Recent Conversation History (last up to " + str(max_history_turns) + " relevant turns) ---")
+                temp_prompt.extend(recent_hist_parts)
+                temp_prompt.append("--- End Recent History ---")
+            if log_part_str: temp_prompt.append(log_part_str)
+            temp_prompt.append(guidance_str_local)
+            temp_prompt.append(sop_str)
+            return "\n".join(temp_prompt)
+
+        current_prompt_text = build_prompt_segment(prompt_construction, recent_history_text_parts, log_text_part, sop_context, guidance_instructions)
+        estimated_tokens = self._estimate_tokens(current_prompt_text)
+        
+        if estimated_tokens > max_context_tokens * 0.95: 
+            print(f"Warning: Live estimated tokens ({estimated_tokens}) exceed 95% of max_context_tokens ({max_context_tokens}). Attempting truncation.")
+            if len(recent_history_text_parts) > 1:
+                recent_history_text_parts = recent_history_text_parts[len(recent_history_text_parts) // 2:]
+                current_prompt_text = build_prompt_segment(prompt_construction, recent_history_text_parts, log_text_part, sop_context, guidance_instructions)
+                estimated_tokens = self._estimate_tokens(current_prompt_text)
+
+            if estimated_tokens > max_context_tokens * 0.95 and cursor_log_content:
+                truncated_log_len = len(cursor_log_content) // 2
+                truncated_log_text_part = f"\n--- Latest Dev Engineer (Cursor) Log (TRUNCATED) ---\n{cursor_log_content[:truncated_log_len]}...\n---"
+                current_prompt_text = build_prompt_segment(prompt_construction, recent_history_text_parts, truncated_log_text_part, sop_context, guidance_instructions)
+                estimated_tokens = self._estimate_tokens(current_prompt_text)
+            
+            if estimated_tokens > max_context_tokens:
+                 return {"status": "ERROR", "content": f"Prompt construction failed: Estimated tokens ({estimated_tokens}) exceed max ({max_context_tokens}) even after basic truncation."}
+
+        full_prompt = current_prompt_text
+        print(f"GeminiComms: Calling live Gemini API (model: {self.model_name}). Est. Prompt Tokens: {estimated_tokens}")
+
+        response_text = ""
+        try:
+            response = self.model.generate_content(full_prompt) 
+            
+            if not response.parts:
+                if response.prompt_feedback and response.prompt_feedback.block_reason:
+                    reason = response.prompt_feedback.block_reason.name if hasattr(response.prompt_feedback.block_reason, 'name') else str(response.prompt_feedback.block_reason)
+                    ratings = ", ".join([f"{r.category.name}: {r.probability.name}" for r in response.prompt_feedback.safety_ratings])
+                    error_message = f"Live API request blocked. Reason: {reason}. Safety: [{ratings}]"
+                    print(f"ERROR (GeminiComms): {error_message}")
+                    return {"status": "ERROR", "content": error_message}
+                else: 
+                    error_message = "Live API returned empty response (no parts, no block reason)."
+                    print(f"ERROR (GeminiComms): {error_message}")
+                    return {"status": "ERROR", "content": error_message}
+
+            response_text = response.text.strip()
+            print(f"GeminiComms: Received response from live API. Length: {len(response_text)}")
+
+            if response_text.startswith(GEMINI_MARKER_NEED_INPUT):
+                return {"status": "NEED_INPUT", "content": response_text.replace(GEMINI_MARKER_NEED_INPUT, "", 1).strip()}
+            elif response_text == GEMINI_MARKER_TASK_COMPLETE:
+                return {"status": "COMPLETE", "content": "Project goal achieved."}
+            elif response_text.startswith(GEMINI_MARKER_SYSTEM_ERROR):
+                return {"status": "ERROR", "content": f"Gemini system error: {response_text.replace(GEMINI_MARKER_SYSTEM_ERROR, '', 1).strip()}"}
+            elif not response_text: 
+                 return {"status": "ERROR", "content": "Live API returned an empty response string."}
+            else:
+                return {"status": "INSTRUCTION", "content": response_text}
+            
+        except genai.types.generation_types.BlockedPromptException as bpe: 
+            print(f"ERROR (GeminiComms): Live API request blocked (BlockedPromptException): {bpe}")
+            return {"status": "ERROR", "content": f"Content policy violation: Prompt blocked by Gemini. Details: {bpe}"}
+        except genai.types.generation_types.StopCandidateException as sce:
+            print(f"ERROR (GeminiComms): Live API response stopped unexpectedly: {sce}")
+            return {"status": "ERROR", "content": f"Gemini response stopped prematurely. Content: {sce.last_response.text if sce.last_response else 'N/A'}"}
+        except google.api_core.exceptions.GoogleAPIError as gae: # Catch broader API errors
+            error_type_name = type(gae).__name__
+            error_message = str(gae)
+            print(f"ERROR (GeminiComms): Google API Error ({error_type_name}): {error_message}")
+            content_to_return = f"Google API Error ({error_type_name}): {error_message}"
+            # Check for common specific cases within GoogleAPIError
+            if isinstance(gae, google.api_core.exceptions.NotFound):
+                 content_to_return = f"Model or resource not found: {error_message}. Check model name in config."
+            elif isinstance(gae, google.api_core.exceptions.PermissionDenied) or "API key not valid" in error_message:
+                 return {"status": "ERROR_API_AUTH", "content": f"Gemini API Key / Permission Issue: {error_message}. Check Settings & API console."}
+            elif isinstance(gae, google.api_core.exceptions.ResourceExhausted): # Rate limiting
+                 content_to_return = f"API Rate Limit Exceeded: {error_message}. Please wait and try again."
+            
+            return {"status": "ERROR", "content": content_to_return}
+        except Exception as e: # Catch any other unexpected exceptions
+            error_type_name = type(e).__name__
+            error_message = str(e)
+            print(f"ERROR (GeminiComms): Unexpected Exception during live Gemini API call ({error_type_name}): {error_message}")
+            return {"status": "ERROR", "content": f"Unexpected error during Gemini call ({error_type_name}): {error_message}"}
+
+# Example Usage (ensure mock counts are reset if running standalone)
 if __name__ == '__main__':
+    mock_main_call_count = 0
+    mock_summary_call_count = 0
     try:
+        print("Running GeminiCommunicator example (Phase 3)...")
         communicator = GeminiCommunicator()
         print("Gemini Communicator initialized.")
-        # Simulate a scenario
-        goal = "Create a simple Python script to print Hello World."
-        history = []
-        log = None # First call
+        
+        test_goal = "Develop a complex application with multiple modules."
+        # history_for_test: List[Turn] = [Turn(sender="USER", message="Initial thoughts on module A.")]
+        history_for_test: List[Turn] = []
 
-        status, content = communicator.get_next_step_from_gemini(goal, None, history, log)
-        print(f"Status: {status}, Content: {content}")
+        # Test summarization
+        long_text_for_summary = "Turn 1: User said A. Turn 2: Gemini instructed B. Turn 3: Cursor logged C. " * 10
+        summary = communicator.summarize_text(long_text_for_summary)
+        print(f"Test Summary: {summary}")
 
-        if status == "INSTRUCTION":
-            history.append({"sender": "gemini", "message": content})
-            # Simulate Cursor completing the task
-            cursor_log_output = "SUCCESS: Created hello.py. Script prints 'Hello World'."
-            status2, content2 = communicator.get_next_step_from_gemini(goal, None, history, cursor_log_output)
-            print(f"Status 2: {status2}, Content 2: {content2}")
-            
-            if status2 == "INSTRUCTION": # Gemini might ask to test it or something
-                 history.append({"sender": "gemini", "message": content2})
-                 cursor_log_output_2 = "SUCCESS: Tested hello.py. It prints 'Hello World' correctly."
-                 status3, content3 = communicator.get_next_step_from_gemini(goal, None, history, cursor_log_output_2)
-                 print(f"Status 3: {status3}, Content 3: {content3}") # Should be TASK_COMPLETE or similar
+        print(f"\n--- Test Main Call 1: Initial instruction ---")
+        response1 = communicator.get_next_step_from_gemini(
+            project_goal=test_goal,
+            full_conversation_history=history_for_test,
+            current_context_summary=summary if summary else "",
+            max_history_turns=3, # Small for testing
+            max_context_tokens=30000, # Large for mock
+            cursor_log_content=None
+        )
+        print(f"Response 1: {response1}")
+        if response1["status"] == "INSTRUCTION":
+            history_for_test.append(Turn(sender="GEMINI_MANAGER", message=response1["content"]))
+        
+        print(f"\n--- Test Main Call 2: Cursor provides log ---")
+        test_log_content = "SUCCESS: Implemented module A feature 1."
+        history_for_test.append(Turn(sender="CURSOR_LOG_SUMMARY", message=test_log_content))
+        response2 = communicator.get_next_step_from_gemini(
+            project_goal=test_goal,
+            full_conversation_history=history_for_test,
+            current_context_summary=summary if summary else "",
+            max_history_turns=3,
+            max_context_tokens=30000,
+            cursor_log_content=test_log_content
+        )
+        print(f"Response 2: {response2}")
+        if response2["status"] == "NEED_INPUT": # Mock should return this
+            history_for_test.append(Turn(sender="GEMINI_MANAGER", message=response2["content"])) # The question
+
+        print(f"\n--- Test Main Call 3: User responds to NEED_INPUT ---")
+        user_response_text = "Proceed with module B."
+        history_for_test.append(Turn(sender="USER", message=user_response_text))
+        response3 = communicator.get_next_step_from_gemini(
+            project_goal=test_goal,
+            full_conversation_history=history_for_test,
+            current_context_summary=summary if summary else "",
+            max_history_turns=3,
+            max_context_tokens=30000,
+            cursor_log_content=None # No new cursor log here
+        )
+        print(f"Response 3: {response3}")
+
 
     except Exception as e:
-        print(f"Error in example usage: {e}") 
+        print(f"Error in example usage: {e}")
+        import traceback
+        traceback.print_exc() 
