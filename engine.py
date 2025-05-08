@@ -362,87 +362,178 @@ class OrchestrationEngine:
     # --- Public Control Methods --- #
 
     def start_task(self, initial_user_instruction: Optional[str] = None):
-        with self._engine_lock: # Ensure thread safety for state checks/changes
+        with self._engine_lock:
+            if hasattr(self, '_last_critical_error') and self._last_critical_error:
+                self._set_state(EngineState.ERROR, self._last_critical_error)
+                return
+
             if not self.current_project or not self.current_project_state:
-                self._set_state(EngineState.ERROR, "No active project selected to start.")
+                self._set_state(EngineState.ERROR, "Cannot start task: No project selected or state not loaded.")
                 return
+
+            # Determine if this is the first meaningful interaction for the current task/project state
+            is_first_interaction = not self.current_project_state.conversation_history
+            if not is_first_interaction and self.current_project_state.conversation_history[-1].sender == "USER" and self.current_project_state.conversation_history[-1].message == initial_user_instruction:
+                # This handles the case where start_task is called immediately after setting user input that forms part of history
+                # Check if the very last message IS the initial_user_instruction from USER, then it's still effectively a first Gemini call for this.
+                 if len(self.current_project_state.conversation_history) == 1: # Only one user message means Gemini hasn't spoken yet.
+                     is_first_interaction = True
+
+            initial_project_structure_overview_str: Optional[str] = None
+            if is_first_interaction:
+                print(f"DEBUG_ENGINE: First interaction for project '{self.current_project.name}'. Generating structure overview.")
+                try:
+                    workspace_path = self.current_project.workspace_root_path
+                    print(f"DEBUG_ENGINE: Workspace path for structure overview: {workspace_path}")
+                    if os.path.isdir(workspace_path):
+                        entries = os.listdir(workspace_path)
+                        files = [e for e in entries if os.path.isfile(os.path.join(workspace_path, e))][:5] # Limit to 5 files
+                        dirs = [e for e in entries if os.path.isdir(os.path.join(workspace_path, e))][:5]   # Limit to 5 dirs
+                        
+                        structure_parts = []
+                        if files:
+                            structure_parts.append(f"Files: {', '.join(files)}")
+                        if dirs:
+                            structure_parts.append(f"Directories: {', '.join(dirs)}")
+                        
+                        if structure_parts:
+                            initial_project_structure_overview_str = f"Project root (\"{workspace_path}\") top-level structure: {'; '.join(structure_parts)}."
+                        else:
+                            initial_project_structure_overview_str = f"Project root (\"{workspace_path}\") is empty or structure could not be determined."
+                        print(f"DEBUG_ENGINE: Generated structure overview: {initial_project_structure_overview_str}")
+                    else:
+                        print(f"DEBUG_ENGINE: Workspace path {workspace_path} is not a valid directory.")
+                        initial_project_structure_overview_str = f"Project root (\"{workspace_path}\") is not a valid directory."
+
+                except Exception as e:
+                    print(f"ERROR_ENGINE: Failed to generate project structure overview: {e}")
+                    # Optionally, pass this error as part of the overview string or handle differently
+                    initial_project_structure_overview_str = f"Error generating project structure: {e}"
+
+            if self.state not in [EngineState.IDLE, EngineState.PROJECT_SELECTED, EngineState.TASK_COMPLETE, EngineState.ERROR]:
+                if self.state == EngineState.PAUSED_WAITING_USER_INPUT and initial_user_instruction:
+                    # This is actually a resume_with_user_input scenario called via start_task logic in GUI
+                    print(f"Engine: Resuming task due to start_task call while PAUSED_WAITING_USER_INPUT with instruction: {initial_user_instruction}")
+                    self.resume_with_user_input(initial_user_instruction)
+                    return 
+                else:
+                    print(f"Engine state is {self.state.name}, cannot start a new task flow now.")
+                    self._notify_gui("status_update", f"Engine is busy ({self.state.name}). Cannot start new task now.")
+                    return
             
-            # Defensive Check: Only allow starting from specific states
-            allowed_states = [EngineState.PROJECT_SELECTED, EngineState.IDLE, EngineState.TASK_COMPLETE, EngineState.ERROR]
-            if self.state not in allowed_states:
-                print(f"ENGINE WARN (start_task): Called while engine in unexpected state: {self.state.name}. Ignoring.")
-                self._notify_gui("status_update", f"Cannot start new task. Engine is busy: {self.state.name}")
+            self._set_state(EngineState.RUNNING_WAITING_INITIAL_GEMINI, "Preparing initial Gemini call.")
+            
+            if initial_user_instruction:
+                self._add_to_history("USER", initial_user_instruction)
+            elif not self.current_project_state.conversation_history: # First run, no instruction, use goal
+                self._add_to_history("SYSTEM", "Task started based on project goal.")
+
+            # Prepare for Gemini call
+            current_summary = self.current_project_state.context_summary
+            full_history = self.current_project_state.conversation_history
+            goal = self.current_project.overall_goal
+
+            # Asynchronous Gemini Call
+            if self._gemini_call_thread and self._gemini_call_thread.is_alive():
+                self._set_state(EngineState.ERROR, "Gemini call already in progress. New task aborted.")
                 return
 
-            self._set_state(EngineState.RUNNING_CALLING_GEMINI)
-            self._notify_gui("status_update", "Initializing task with Dev Manager (Gemini)...")
-
-            # If there's an initial instruction from the user (e.g., refining the goal or first step)
-            # We treat this as if the user just spoke, and then Gemini will use this to form the first instruction to Cursor.
-            # This also means the initial_user_instruction will be part of the history for Gemini.
-            if initial_user_instruction:
-                 self._add_to_history("user", initial_user_instruction)
-
-            print(f"DEBUG_ENGINE (start_task): About to call Gemini. Current state: {self.state.name}")
-            response_dict = self.gemini_client.get_next_step_from_gemini(
-                project_goal=self.current_project.overall_goal,
-                current_context_summary=self.current_project_state.context_summary,
-                full_conversation_history=self.current_project_state.conversation_history,
-                max_history_turns=self.config.get_max_history_turns(),
-                max_context_tokens=self.config.get_max_context_tokens(),
-                cursor_log_content=None
+            # Threading setup for Gemini call
+            result_queue = queue.Queue()
+            self._gemini_call_thread = threading.Thread(
+                target=self._call_gemini_in_thread,
+                args=(goal, full_history, current_summary, initial_project_structure_overview_str, None, result_queue) # Pass structure overview
             )
-            gemini_status = response_dict.get("status")
-            gemini_content = response_dict.get("content")
+            self._gemini_call_thread.start()
 
-            print(f"DEBUG_ENGINE (start_task): Gemini call returned. Status: '{gemini_status}', Content Length: {len(gemini_content if gemini_content else '')}")
-            # print(f"DEBUG_ENGINE (start_task): Content Snippet: {gemini_content[:100] if gemini_content else 'N/A'}...") # Optional more detail
+            # Non-blocking wait for result (or handle via callback if GUI exists)
+            # For now, let's assume direct processing or a more complex async handler would be here.
+            # This example will be simplified for direct testability.
+            # The actual Gemini result processing and state transition will happen in _process_gemini_response.
+            print("DEBUG_ENGINE: Thread for _call_gemini_in_thread started. Waiting for queue...")
+            try:
+                gemini_response_data = result_queue.get(timeout=GEMINI_CALL_TIMEOUT_SECONDS)
+                print(f"DEBUG_ENGINE: Gemini response received from queue: {gemini_response_data}") # Print response for testing
+                self._process_gemini_response(gemini_response_data)
+            except queue.Empty:
+                self._set_state(EngineState.ERROR, "Gemini call timed out.")
+                print("ERROR_ENGINE: Gemini call timed out waiting for response from queue.")
+            except Exception as e:
+                self._set_state(EngineState.ERROR, f"Error processing Gemini response from queue: {e}")
+                print(f"ERROR_ENGINE: Exception processing Gemini response: {traceback.format_exc()}")
 
-            if gemini_status == "INSTRUCTION":
-                print("DEBUG_ENGINE (start_task): gemini_status is INSTRUCTION. Attempting to write instruction file.") # Debug
-                if self._write_instruction_file(gemini_content):
-                    print("DEBUG_ENGINE (start_task): Instruction file written. Setting state to RUNNING_WAITING_LOG.") # Debug
-                    self._set_state(EngineState.RUNNING_WAITING_LOG)
-                    self._start_file_watcher()
-                # else: error already handled by _write_instruction_file and state set to ERROR
-            elif gemini_status == "NEED_INPUT":
-                print("DEBUG_ENGINE (start_task): gemini_status is NEED_INPUT. Setting state to PAUSED_WAITING_USER_INPUT.") # Debug
-                self._set_state(EngineState.PAUSED_WAITING_USER_INPUT)
-                self._add_to_history("gemini_clarification_request", gemini_content)
-                self._notify_gui("user_input_needed", gemini_content)
-            elif gemini_status == "COMPLETE": # Unlikely on first call, but handle
-                print("DEBUG_ENGINE (start_task): gemini_status is COMPLETE. Setting state to TASK_COMPLETE.") # Debug
-                self._set_state(EngineState.TASK_COMPLETE)
-                self._add_to_history("gemini", "Task marked as complete immediately.")
-                self._notify_gui("task_complete", gemini_content)
-            elif gemini_status == "ERROR":
-                print(f"DEBUG_ENGINE (start_task): gemini_status is ERROR. Content: {gemini_content}. Setting state to ERROR.") # Debug
-                self._set_state(EngineState.ERROR, f"Gemini API Error on start: {gemini_content}")
-                self._add_to_history("system_error", f"Gemini API Error on start: {gemini_content}")
+    def _call_gemini_in_thread(self, project_goal, full_history, current_summary, initial_structure_overview, cursor_log_content, q):
+        # This method runs in a separate thread
+        self._set_state(EngineState.RUNNING_CALLING_GEMINI, "Contacting Gemini...")
+        try:
+            max_hist = self.config.get_max_history_turns()
+            max_tokens = self.config.get_max_context_tokens()
+            response = self.gemini_client.get_next_step_from_gemini(
+                project_goal=project_goal,
+                full_conversation_history=full_history,
+                current_context_summary=current_summary,
+                max_history_turns=max_hist,
+                max_context_tokens=max_tokens,
+                cursor_log_content=cursor_log_content,
+                initial_project_structure_overview=initial_structure_overview # Pass here
+            )
+            q.put(response)
+        except Exception as e:
+            print(f"ERROR_ENGINE: Exception in _call_gemini_in_thread: {traceback.format_exc()}")
+            q.put({"status": "ERROR", "content": f"Exception during Gemini call: {e}"})
+
+    def _process_gemini_response(self, response_data: Dict[str, Any]):
+        if not self.current_project or not self.current_project_state:
+            self._set_state(EngineState.ERROR, "Critical error: No active project or state during Gemini response processing.")
+            return
+
+        gemini_status = response_data.get("status")
+        gemini_content = response_data.get("content")
+
+        if gemini_status == "INSTRUCTION":
+            if self._write_instruction_file(gemini_content):
+                self._set_state(EngineState.RUNNING_WAITING_LOG)
+                self._start_file_watcher()
             else:
-                print(f"DEBUG_ENGINE (start_task): UNHANDLED gemini_status: '{gemini_status}'. State will remain {self.state.name}.") # Debug
+                # Error already set by _write_instruction_file
+                pass 
+        elif gemini_status == "NEED_INPUT":
+            self._set_state(EngineState.PAUSED_WAITING_USER_INPUT)
+            self._add_to_history("gemini_clarification_request", gemini_content)
+            self._notify_gui("user_input_needed", gemini_content)
+        elif gemini_status == "COMPLETE":
+            self._set_state(EngineState.TASK_COMPLETE)
+            self._add_to_history("gemini", "Task marked as complete.")
+            self._notify_gui("task_complete", gemini_content)
+        elif gemini_status == "ERROR":
+            self._set_state(EngineState.ERROR, f"Gemini API Error: {gemini_content}")
+            self._add_to_history("system_error", f"Gemini API Error: {gemini_content}")
 
     def resume_with_user_input(self, user_response: str):
-        with self._engine_lock: # Ensure thread safety
-            # Defensive Check: Only allow resuming from PAUSED_WAITING_USER_INPUT
+        with self._engine_lock:
+            if not self.current_project or not self.current_project_state:
+                self._set_state(EngineState.ERROR, "Cannot resume: No project selected or state not loaded.")
+                return
+
             if self.state != EngineState.PAUSED_WAITING_USER_INPUT:
-                print(f"ENGINE WARN (resume_with_user_input): Called while engine not in PAUSED_WAITING_USER_INPUT state. Current: {self.state.name}. Ignoring.")
-                self._notify_gui("status_update", f"Cannot process response. Engine is not waiting for user input. Current state: {self.state.name}")
+                self._set_state(EngineState.ERROR, f"Cannot resume: Engine not in PAUSED_WAITING_USER_INPUT state (is {self.state.name}).")
                 return
             
-            if not self.current_project or not self.current_project_state:
-                # This check might be redundant if state is PAUSED..., but good practice
-                self._set_state(EngineState.ERROR, "Critical error: No active project or state during resume.")
+            self._add_to_history("USER", user_response)
+
+            # Prepare for Gemini call
+            current_summary = self.current_project_state.context_summary
+            full_history = self.current_project_state.conversation_history
+            goal = self.current_project.overall_goal
+
+            if self._gemini_call_thread and self._gemini_call_thread.is_alive():
+                self._set_state(EngineState.ERROR, "Gemini call already in progress. New task aborted.")
                 return
 
-            self._add_to_history("user", user_response)
-            self._set_state(EngineState.RUNNING_CALLING_GEMINI)
-            self._notify_gui("status_update", "Sending your input to Dev Manager (Gemini)...")
-
             response_dict = self.gemini_client.get_next_step_from_gemini(
-                project_goal=self.current_project.overall_goal,
-                current_context_summary=self.current_project_state.context_summary,
-                full_conversation_history=self.current_project_state.conversation_history,
+                project_goal=goal,
+                current_context_summary=current_summary,
+                full_conversation_history=full_history,
                 max_history_turns=self.config.get_max_history_turns(),
                 max_context_tokens=self.config.get_max_context_tokens(),
                 cursor_log_content=None
@@ -454,7 +545,7 @@ class OrchestrationEngine:
                 if self._write_instruction_file(gemini_content):
                     self._set_state(EngineState.RUNNING_WAITING_LOG)
                     self._start_file_watcher()
-            elif gemini_status == "NEED_INPUT": # Gemini might still need more input
+            elif gemini_status == "NEED_INPUT":
                 self._set_state(EngineState.PAUSED_WAITING_USER_INPUT)
                 self._add_to_history("gemini_clarification_request", gemini_content)
                 self._notify_gui("user_input_needed", gemini_content)

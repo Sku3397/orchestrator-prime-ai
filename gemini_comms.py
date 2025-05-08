@@ -192,7 +192,8 @@ Summary:"""
                                   current_context_summary: str,
                                   max_history_turns: int,
                                   max_context_tokens: int, 
-                                  cursor_log_content: Optional[str]
+                                  cursor_log_content: Optional[str],
+                                  initial_project_structure_overview: Optional[str] = None  # New parameter
                                   ) -> Dict[str, Any]:
         # TEMP FOR TEST 6 - RESTORED
         # if cursor_log_content is not None:
@@ -201,9 +202,9 @@ Summary:"""
         # END TEMP FOR TEST 6 - RESTORED
 
         # ---- START TEMPORARY MODIFICATION FOR USER INPUT SIMULATION ----
-        if cursor_log_content is None and full_conversation_history and full_conversation_history[-1].sender == "USER":
-            print("DEBUG_GEMINI_COMMS: Forced PROCEED after simulated user input for testing.")
-            return {"status": "INSTRUCTION", "content": "Okay, I see the project structure. Now, please create a file named 'test_file.py' in the root and write 'print(\\'Hello World\\')' into it."}
+        # if cursor_log_content is None and full_conversation_history and full_conversation_history[-1].sender == "USER":
+        #     print("DEBUG_GEMINI_COMMS: Forced PROCEED after simulated user input for testing.")
+        #     return {"status": "INSTRUCTION", "content": "Okay, I see the project structure. Now, please create a file named 'test_file.py' in the root and write 'print(\\\'Hello World\\\')' into it."}
         # ---- END TEMPORARY MODIFICATION ----
 
         if MOCK_GEMINI_ENABLED:
@@ -217,9 +218,16 @@ Summary:"""
         if not hasattr(self, 'model') or not self.model:
             return {"status": "ERROR", "content": "Gemini model not initialized (live mode & API key issue or other init failure)."}
 
-        prompt_construction = [f"Overall Project Goal: {project_goal}\n"]
+        prompt_construction = [] # Initialize as list
+
+        # New: Add initial project structure overview if provided
+        if initial_project_structure_overview:
+            prompt_construction.append(f"--- Initial Project Structure Overview ---\\n{initial_project_structure_overview}\\n---\\n")
+
+        prompt_construction.append(f"Overall Project Goal: {project_goal}\\n") # Append, don't assign
+
         if current_context_summary:
-            prompt_construction.append(f"--- Previously Summarized Context ---\n{current_context_summary}\n---\n")
+            prompt_construction.append(f"--- Previously Summarized Context ---\\n{current_context_summary}\\n---\\n")
         
         recent_history_text_parts = []
         if full_conversation_history:
@@ -248,41 +256,44 @@ Focus on one discrete step at a time for the Dev Engineer. Adhere to their SOP.
         sop_context = f"\nReference: The Dev Engineer SOP is:\n{CURSOR_SOP_PROMPT}"
         
         def build_prompt_segment(current_prompt_list, recent_hist_parts, log_part_str, sop_str, guidance_str_local):
-            temp_prompt = list(current_prompt_list) 
-            if recent_hist_parts:
-                temp_prompt.append("\n--- Recent Conversation History (last up to " + str(max_history_turns) + " relevant turns) ---")
-                temp_prompt.extend(recent_hist_parts)
-                temp_prompt.append("--- End Recent History ---")
-            if log_part_str: temp_prompt.append(log_part_str)
-            temp_prompt.append(guidance_str_local)
-            temp_prompt.append(sop_str)
-            return "\n".join(temp_prompt)
-
-        current_prompt_text = build_prompt_segment(prompt_construction, recent_history_text_parts, log_text_part, sop_context, guidance_instructions)
-        estimated_tokens = self._estimate_tokens(current_prompt_text)
-        
-        if estimated_tokens > max_context_tokens * 0.95: 
-            print(f"Warning: Live estimated tokens ({estimated_tokens}) exceed 95% of max_context_tokens ({max_context_tokens}). Attempting truncation.")
-            if len(recent_history_text_parts) > 1:
-                recent_history_text_parts = recent_history_text_parts[len(recent_history_text_parts) // 2:]
-                current_prompt_text = build_prompt_segment(prompt_construction, recent_history_text_parts, log_text_part, sop_context, guidance_instructions)
-                estimated_tokens = self._estimate_tokens(current_prompt_text)
-
-            if estimated_tokens > max_context_tokens * 0.95 and cursor_log_content:
-                truncated_log_len = len(cursor_log_content) // 2
-                truncated_log_text_part = f"\n--- Latest Dev Engineer (Cursor) Log (TRUNCATED) ---\n{cursor_log_content[:truncated_log_len]}...\n---"
-                current_prompt_text = build_prompt_segment(prompt_construction, recent_history_text_parts, truncated_log_text_part, sop_context, guidance_instructions)
-                estimated_tokens = self._estimate_tokens(current_prompt_text)
+            # Construct the prompt string by joining parts
+            # Order: Main Goal, Structure, Summary, History, Log, Guidance, SOP
             
-            if estimated_tokens > max_context_tokens:
-                 return {"status": "ERROR", "content": f"Prompt construction failed: Estimated tokens ({estimated_tokens}) exceed max ({max_context_tokens}) even after basic truncation."}
+            # Start with elements that are already in current_prompt_list
+            # (Goal, Structure, Summary)
+            temp_prompt_parts = list(current_prompt_list)
 
-        full_prompt = current_prompt_text
-        print(f"GeminiComms: Calling live Gemini API (model: {self.model_name}). Est. Prompt Tokens: {estimated_tokens}")
+            if recent_hist_parts:
+                temp_prompt_parts.append("\n--- Recent Conversation History ---")
+                temp_prompt_parts.extend(recent_hist_parts)
+                temp_prompt_parts.append("---\n")
+            
+            if log_part_str: # This is the Dev Engineer's latest log
+                temp_prompt_parts.append(log_part_str) # log_part_str already has --- markers
 
-        response_text = ""
+            temp_prompt_parts.append("\n--- Your Instructions to Dev Engineer ---")
+            temp_prompt_parts.append(guidance_str_local)
+            temp_prompt_parts.append(sop_str) # SOP at the end as reference
+            
+            return "\n".join(temp_prompt_parts)
+
+        # Iteratively build the prompt, checking token count (simplified for this example)
+        # In a real scenario, you'd be more precise with token counting and history truncation
+        
+        final_prompt_text = build_prompt_segment(prompt_construction, recent_history_text_parts, log_text_part, sop_context, guidance_instructions)
+        
+        # DEBUG: Print the final prompt
+        print("\n--- FINAL PROMPT TO GEMINI ---")
+        print(final_prompt_text)
+        print("--- END OF FINAL PROMPT ---\n")
+
         try:
-            response = self.model.generate_content(full_prompt) 
+            generation_config = genai.types.GenerationConfig(
+                max_output_tokens=max_context_tokens, 
+                temperature=0.4 
+            )
+            print(f"GeminiComms: Calling live Gemini API (model: {self.model_name}). Est. Prompt Tokens: {self._estimate_tokens(final_prompt_text)}")
+            response = self.model.generate_content(final_prompt_text, generation_config=generation_config)
             
             if not response.parts:
                 if response.prompt_feedback and response.prompt_feedback.block_reason:
@@ -361,7 +372,8 @@ if __name__ == '__main__':
             current_context_summary=summary if summary else "",
             max_history_turns=3, # Small for testing
             max_context_tokens=30000, # Large for mock
-            cursor_log_content=None
+            cursor_log_content=None,
+            initial_project_structure_overview=None
         )
         print(f"Response 1: {response1}")
         if response1["status"] == "INSTRUCTION":
@@ -376,7 +388,8 @@ if __name__ == '__main__':
             current_context_summary=summary if summary else "",
             max_history_turns=3,
             max_context_tokens=30000,
-            cursor_log_content=test_log_content
+            cursor_log_content=test_log_content,
+            initial_project_structure_overview=None
         )
         print(f"Response 2: {response2}")
         if response2["status"] == "NEED_INPUT": # Mock should return this
@@ -391,7 +404,8 @@ if __name__ == '__main__':
             current_context_summary=summary if summary else "",
             max_history_turns=3,
             max_context_tokens=30000,
-            cursor_log_content=None # No new cursor log here
+            cursor_log_content=None, # No new cursor log here
+            initial_project_structure_overview=None
         )
         print(f"Response 3: {response3}")
 
