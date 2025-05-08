@@ -101,6 +101,7 @@ class GeminiCommunicator:
         self.config = ConfigManager()
         api_key = self.config.get_api_key()
         self.model_name = self.config.get_gemini_model()
+        # self._test5_first_call_done = False # RESTORED - REMOVED FOR TEST 5
 
         if MOCK_GEMINI_ENABLED:
             print("GeminiCommunicator initialized in MOCK mode.")
@@ -193,6 +194,18 @@ Summary:"""
                                   max_context_tokens: int, 
                                   cursor_log_content: Optional[str]
                                   ) -> Dict[str, Any]:
+        # TEMP FOR TEST 6 - RESTORED
+        # if cursor_log_content is not None:
+        #     print("DEBUG_GEMINI_COMMS: Test 6 - Forcing TASK_COMPLETE because log content provided.")
+        #     return {"status": "COMPLETE", "content": "Mocked Task Complete"}
+        # END TEMP FOR TEST 6 - RESTORED
+
+        # ---- START TEMPORARY MODIFICATION FOR USER INPUT SIMULATION ----
+        if cursor_log_content is None and full_conversation_history and full_conversation_history[-1].sender == "USER":
+            print("DEBUG_GEMINI_COMMS: Forced PROCEED after simulated user input for testing.")
+            return {"status": "INSTRUCTION", "content": "Okay, I see the project structure. Now, please create a file named 'test_file.py' in the root and write 'print(\\'Hello World\\')' into it."}
+        # ---- END TEMPORARY MODIFICATION ----
+
         if MOCK_GEMINI_ENABLED:
             print(f"MOCK GEMINI (Main Call): Goal: '{project_goal[:30]}...'")
             time.sleep(0.2) 

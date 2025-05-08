@@ -109,11 +109,9 @@ if __name__ == "__main__":
         sys.exit(1)
 
     finally:
+        # Ensure engine shutdown is called once if the engine was created
         if engine_instance:
             print("Main: Initiating engine shutdown...")
             engine_instance.shutdown()
-            print("Main: Application exited.") 
-            engine_instance.shutdown()
-            print("Main: Application exited.") 
-            engine_instance.shutdown()
-            print("Main: Application exited.") 
+        print("Main: Application exited.") 
+        # Removed redundant shutdown calls 

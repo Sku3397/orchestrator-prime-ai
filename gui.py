@@ -4,7 +4,7 @@ import os
 from tkinter import simpledialog, messagebox, filedialog
 from typing import Optional, List, Dict, Any
 from persistence import load_projects, add_project, Project, get_project_by_name
-from engine import OrchestrationEngine, EngineState # Assuming OrchestrationEngine is in engine.py
+from engine import OrchestrationEngine, EngineState
 
 class App(ctk.CTk):
     def __init__(self, engine: OrchestrationEngine):
@@ -126,6 +126,13 @@ class App(ctk.CTk):
                 messagebox.showerror("Error", "Failed to add new project.", parent=self)
 
     def on_project_selected(self, project_name: str):
+        # Re-entrancy guard
+        if hasattr(self, '_currently_selecting_project') and self._currently_selecting_project == project_name:
+            # print(f"DEBUG: on_project_selected re-entered for {project_name}, returning.")
+            return
+        self._currently_selecting_project = project_name
+        # print(f"DEBUG: on_project_selected for {project_name}")
+
         if project_name == "No projects available" or not project_name:
              if self.engine.current_project:
                 self.engine.stop_task() # Stop any task if project is deselected or invalid
@@ -139,6 +146,9 @@ class App(ctk.CTk):
              self.chat_display.configure(state="disabled")
              self.engine._set_state(EngineState.IDLE) # Use internal method for consistency
              self.update_button_states()
+             self._currently_selecting_project = None # Release guard
+             # Clear input field when project changes
+             self.user_input_entry.delete(0, "end") 
              return
 
         project = get_project_by_name(project_name)
@@ -161,48 +171,80 @@ class App(ctk.CTk):
                 self.project_goal_text.delete("1.0", "end")
                 self.project_goal_text.configure(state="disabled")
         self.update_button_states()
+        self._currently_selecting_project = None # Release guard
 
     def start_task(self):
+        print("DEBUG_GUI: start_task button clicked")
         if not self.engine.current_project:
             messagebox.showwarning("No Project", "Please select or add a project first.", parent=self)
             return
-        
-        initial_input = self.user_input_entry.get().strip()
-        # If engine is in a state where it needs user input for PAUSED_WAITING_USER_INPUT, this button might be 'Resume'
-        if self.engine.state == EngineState.PAUSED_WAITING_USER_INPUT:
-            if not initial_input:
-                messagebox.showwarning("Input Needed", "Please provide your response in the input field.", parent=self)
-                return
-            self.engine.resume_with_user_input(initial_input)
-        else:
-            # Normal start, initial_input is optional for refining the goal or first step
-            self.engine.start_task(initial_user_instruction=initial_input if initial_input else None)
-        
-        self.user_input_entry.delete(0, "end")
+            
+        # Check engine state before calling engine method
+        allowed_states = [EngineState.IDLE, EngineState.PROJECT_SELECTED, EngineState.TASK_COMPLETE, EngineState.ERROR]
+        if self.engine.state not in allowed_states:
+             self.add_message("SYSTEM_STATUS", f"Engine is busy ({self.engine.state.name}). Cannot start a new task now.")
+             print(f"GUI: Ignoring start_task command, engine state is {self.engine.state.name}")
+             return
 
-    def send_user_input(self, event=None): # Can be called by button or Enter key
+        instruction = self.user_input_entry.get().strip()
+        if not instruction:
+            # If no text, assume user wants to start based on goal only
+            print("GUI: Starting task with no initial instruction (using project goal).")
+        else:
+            print(f"GUI: Starting task with initial instruction: {instruction}")
+            self.user_input_entry.delete(0, "end") # Clear input after sending as initial instruction
+
+        # Call engine's start_task (which now also has internal checks)
+        self.engine.start_task(initial_user_instruction=instruction if instruction else None)
+        # Engine state changes will trigger handle_engine_update -> update_button_states
+
+    def send_user_input(self, event=None): # Bound to Send button and Enter key in input field
+        print(f"DEBUG_GUI: send_user_input invoked, engine state: {self.engine.state.name}")
+        
+        # --- State Check ---
+        busy_states = [EngineState.RUNNING_CALLING_GEMINI, EngineState.RUNNING_PROCESSING_LOG, EngineState.RUNNING_WAITING_LOG, EngineState.LOADING_PROJECT]
+        if self.engine.state in busy_states:
+            self.add_message("SYSTEM_STATUS", f"Engine is busy ({self.engine.state.name}). Please wait.")
+            print(f"GUI: Ignoring user input, engine state is {self.engine.state.name}")
+            return
+
         user_text = self.user_input_entry.get().strip()
-        if not user_text:
-            return
-
-        if not self.engine.current_project:
-            self.add_message("SYSTEM_INFO", "Please select a project to start.")
-            # messagebox.showwarning("No Project", "Please select or add a project first.", parent=self)
-            return
-
-        current_engine_state = self.engine.state
-        if current_engine_state == EngineState.PAUSED_WAITING_USER_INPUT:
+        
+        if self.engine.state == EngineState.PAUSED_WAITING_USER_INPUT:
+            if not user_text:
+                 messagebox.showwarning("Input Needed", "Please provide the requested input.", parent=self)
+                 return
+            print(f"GUI: Resuming task with user input: {user_text}")
             self.engine.resume_with_user_input(user_text)
-        elif current_engine_state in [EngineState.IDLE, EngineState.PROJECT_SELECTED, EngineState.TASK_COMPLETE, EngineState.ERROR]:
-            # Treat as starting the task with this input as the initial instruction/goal refinement
-            self.engine.start_task(initial_user_instruction=user_text)
+            self.user_input_entry.delete(0, "end") # Clear after sending
+        elif self.engine.state in [EngineState.IDLE, EngineState.PROJECT_SELECTED, EngineState.TASK_COMPLETE, EngineState.ERROR]:
+             # Treat as starting a new task if engine is in a ready state
+             if not self.engine.current_project:
+                 messagebox.showwarning("No Project", "Please select or add a project first.", parent=self)
+                 return
+             if not user_text:
+                  # Ask user if they want to start based on goal only? Or just require input?
+                  # For now, let's require text to start via Send/Enter. Start button handles goal-only start.
+                  messagebox.showwarning("Input Missing", "Please enter an initial instruction or use the 'Start Task' button.", parent=self)
+                  return
+                  
+             print(f"GUI: Starting new task via Send/Enter with instruction: {user_text}")
+             self.engine.start_task(initial_user_instruction=user_text)
+             self.user_input_entry.delete(0, "end") # Clear after sending
         else:
-            # Undefined behavior for other states, perhaps log or show a message
-            self.add_message("SYSTEM_INFO", f"Input ignored. Current task state: {current_engine_state.name}")
-            # messagebox.showinfo("Info", f"Cannot process input in current state: {current_engine_state.name}", parent=self)
-            return # Do not clear input if not used
+             # Should not happen if busy_states check is correct, but as a fallback
+             self.add_message("SYSTEM_STATUS", f"Cannot process input in current state: {self.engine.state.name}")
+             print(f"GUI: Ignoring user input, unexpected engine state: {self.engine.state.name}")
 
-        self.user_input_entry.delete(0, "end")
+    def pause_task(self):
+        print("DEBUG_GUI: pause_task button clicked")
+        # Add state check? Pause might be allowed in more states?
+        self.engine.pause_task()
+
+    def stop_task(self):
+        print("DEBUG_GUI: stop_task button clicked")
+        # Add state check? Stop might be allowed in most states?
+        self.engine.stop_task()
 
     def update_button_states(self):
         current_state = self.engine.state
@@ -239,19 +281,17 @@ class App(ctk.CTk):
             self.stop_button.configure(state="disabled")
 
     def handle_engine_update(self, message_type: str, data: Any):
-        # Ensure GUI updates run in the main thread
-        # print(f"GUI received engine update: {message_type}, {data}") 
+        """Callback function for the engine to update the GUI."""
+        # Ensure GUI updates happen on the main thread
+        # print(f"DEBUG_GUI: Received handle_engine_update: Type={message_type}, Data={data}") # Can be noisy
+        
         if message_type == "state_change":
-            self.status_label_var.set(f"Engine: {data}")
-            if data == EngineState.PAUSED_WAITING_USER_INPUT.name:
-                self.user_input_entry.focus()
-                self.user_input_entry.configure(placeholder_text="Dev Manager needs your input...")
-            elif data == EngineState.ERROR.name and self.engine.last_error_message:
-                 self.status_label_var.set(f"Engine: ERROR") # Keep it short
-                 self.add_message("SYSTEM_ERROR", self.engine.last_error_message)
-            else:
-                self.user_input_entry.configure(placeholder_text="Enter initial instruction or response here...")
-            self.update_button_states()
+            try:
+                new_state = EngineState[data] # data should be the state name string
+                self.update_button_states()
+            except KeyError:
+                 print(f"GUI Error: Received unknown engine state name '{data}'")
+                 self.update_button_states(EngineState.ERROR) # Fallback state
         elif message_type == "error":
             self.add_message("ENGINE_ERROR", str(data))
             # No need to show modal for every engine error, status label and chat log should cover it.
@@ -262,6 +302,7 @@ class App(ctk.CTk):
             # self.project_dropdown.set(project_name) # This might trigger on_project_selected again, be careful
             self.update_button_states()
         elif message_type == "new_message":
+            print(f"DEBUG_GUI: Received new_message: Sender={data.get('sender')}, Msg Len={len(data.get('message', ''))}") # Added debug
             self.add_message(data.get('sender', 'unknown'), data.get('message', ''), data.get('timestamp'))
         elif message_type == "user_input_needed":
             self.add_message("DEV_MANAGER", f"Input Needed: {data}")
@@ -324,10 +365,10 @@ class NewProjectDialog(ctk.CTkToplevel):
         self.cancel_button_custom = ctk.CTkButton(self.button_frame, text="Cancel", width=80, command=self._cancel_event_custom)
         self.cancel_button_custom.pack(side="right")
         
-        # Make modal - TEMPORARILY DISABLED FOR DEBUGGING
-        # self.grab_set() 
+        # Make modal
+        self.grab_set() 
         self.name_entry.focus()
-        # self.wait_window()
+        self.wait_window()
 
     def browse_path(self):
         path = filedialog.askdirectory(parent=self)
