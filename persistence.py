@@ -4,6 +4,10 @@ import uuid # For generating project IDs
 from typing import List, Optional, Dict, Any 
 from models import Project, ProjectState, Turn
 from dataclasses import asdict
+import logging # Added
+
+# Get logger instance
+logger = logging.getLogger("orchestrator_prime")
 
 APP_DATA_DIR = "app_data"
 PROJECTS_FILE = os.path.join(APP_DATA_DIR, "projects.json")
@@ -18,144 +22,197 @@ def _ensure_app_data_dir_exists():
     if not os.path.exists(APP_DATA_DIR):
         try:
             os.makedirs(APP_DATA_DIR)
-            print(f"Created directory: {APP_DATA_DIR}")
+            logger.info(f"Created application data directory: {APP_DATA_DIR}")
         except OSError as e:
-            print(f"CRITICAL PERSISTENCE ERROR: Could not create directory {APP_DATA_DIR}: {e}")
+            logger.critical(f"Could not create application data directory {APP_DATA_DIR}: {e}", exc_info=True)
             raise PersistenceError(f"Failed to create {APP_DATA_DIR}: {e}") from e
 
 def _ensure_project_state_dir_exists(workspace_root_path: str) -> Optional[str]:
     if not os.path.isabs(workspace_root_path):
-        print(f"PERSISTENCE ERROR: workspace_root_path '{workspace_root_path}' must be an absolute path.")
-        return None
+        # Making this a warning, as maybe relative paths could be resolved, but generally risky.
+        logger.warning(f"workspace_root_path '{workspace_root_path}' should ideally be an absolute path.")
+        # For now, let's try to proceed by making it absolute relative to cwd
+        # This might not be the intended behavior in all cases.
+        workspace_root_path = os.path.abspath(workspace_root_path)
+        logger.warning(f"Resolved relative workspace path to absolute: {workspace_root_path}")
+        # Alternatively, raise PersistenceError here if absolute paths are mandatory.
+        # raise PersistenceError(f"workspace_root_path '{workspace_root_path}' must be an absolute path.")
+        # return None
+
     state_dir = os.path.join(workspace_root_path, PROJECT_STATE_DIR_NAME)
     if not os.path.exists(state_dir):
         try:
             os.makedirs(state_dir)
-            print(f"Created directory: {state_dir}")
+            logger.info(f"Created project state directory: {state_dir}")
         except OSError as e:
-            print(f"PERSISTENCE ERROR: Could not create directory {state_dir}: {e}")
-            return None 
+            logger.error(f"Could not create project state directory {state_dir}: {e}", exc_info=True)
+            return None # Indicate failure
     return state_dir
 
 def load_projects() -> List[Project]:
     try:
         _ensure_app_data_dir_exists() 
     except PersistenceError:
-        return [] 
+        # Error already logged in _ensure_app_data_dir_exists
+        return [] # Cannot proceed without app data dir
 
     if not os.path.exists(PROJECTS_FILE):
         try:
             with open(PROJECTS_FILE, 'w') as f:
                 json.dump([], f)
-            print(f"Created empty projects file: {PROJECTS_FILE}")
+            logger.info(f"Created empty projects file: {PROJECTS_FILE}")
             return []
         except IOError as e:
-            print(f"PERSISTENCE ERROR: Could not create empty projects file {PROJECTS_FILE}: {e}")
+            logger.error(f"Could not create empty projects file {PROJECTS_FILE}: {e}", exc_info=True)
             return []
     try:
         with open(PROJECTS_FILE, 'r') as f:
             projects_data = json.load(f)
+        # Add validation here if needed (e.g., check if data is a list of dicts)
         return [Project(**data) for data in projects_data]
     except json.JSONDecodeError as e:
-        print(f"PERSISTENCE ERROR: Failed to decode {PROJECTS_FILE}. Returning empty list. Error: {e}")
+        logger.error(f"Failed to decode JSON from {PROJECTS_FILE}. Returning empty project list. Error: {e}", exc_info=True)
         return []
     except TypeError as e: 
-        print(f"PERSISTENCE ERROR: Type error loading projects from {PROJECTS_FILE}. Data might be malformed. Error: {e}")
+        logger.error(f"Type error loading projects from {PROJECTS_FILE}. Data might be malformed. Error: {e}", exc_info=True)
         return []
     except IOError as e: 
-        print(f"PERSISTENCE ERROR: Could not read projects file {PROJECTS_FILE}: {e}")
+        logger.error(f"Could not read projects file {PROJECTS_FILE}: {e}", exc_info=True)
+        return []
+    except Exception as e:
+        logger.critical(f"Unexpected error loading projects from {PROJECTS_FILE}: {e}", exc_info=True)
         return []
 
 def save_projects(projects: List[Project]):
     try:
         _ensure_app_data_dir_exists()
-    except PersistenceError:
-        raise PersistenceError("Cannot save projects, app_data directory inaccessible.")
+    except PersistenceError as e:
+        logger.critical(f"Cannot save projects, app_data directory inaccessible: {e}")
+        raise PersistenceError(f"Cannot save projects, app_data directory inaccessible: {e}") from e
 
     projects_data = [asdict(p) for p in projects]
     try:
         with open(PROJECTS_FILE, 'w') as f:
             json.dump(projects_data, f, indent=4)
+        logger.info(f"Saved {len(projects)} projects to {PROJECTS_FILE}")
     except (IOError, TypeError) as e: 
-        print(f"PERSISTENCE ERROR: Failed to save projects to {PROJECTS_FILE}: {e}")
+        logger.error(f"Failed to save projects to {PROJECTS_FILE}: {e}", exc_info=True)
         raise PersistenceError(f"Failed to save projects: {e}") from e
+    except Exception as e:
+        logger.critical(f"Unexpected error saving projects to {PROJECTS_FILE}: {e}", exc_info=True)
+        raise PersistenceError(f"Unexpected error saving projects: {e}") from e
 
 def load_project_state(project: Project) -> Optional[ProjectState]:
     if not project or not project.workspace_root_path:
-        print("PERSISTENCE ERROR: Invalid project (no workspace_root_path) for loading state.")
+        logger.error("Invalid project provided (missing or no workspace_root_path) for loading state.")
         return None
     
-    state_dir = os.path.join(project.workspace_root_path, PROJECT_STATE_DIR_NAME)
+    # Ensure workspace path is absolute for reliable state dir calculation
+    abs_workspace_path = os.path.abspath(project.workspace_root_path)
+    state_dir = os.path.join(abs_workspace_path, PROJECT_STATE_DIR_NAME)
     state_file_path = os.path.join(state_dir, PROJECT_STATE_FILE_NAME)
 
     if not os.path.exists(state_file_path):
-        print(f"State file not found for project '{project.name}' at {state_file_path}. Returning None.")
+        logger.info(f"State file not found for project '{project.name}' at {state_file_path}. Returning None (new state will be created by engine if needed).")
         return None 
     
+    logger.debug(f"Attempting to load project state for '{project.name}' from {state_file_path}")
     try:
         with open(state_file_path, 'r') as f:
             state_data = json.load(f)
         
-        if 'conversation_history' in state_data:
-            state_data['conversation_history'] = [Turn(**turn_data) for turn_data in state_data['conversation_history']]
+        # Rehydrate Turn objects from dicts
+        if 'conversation_history' in state_data and isinstance(state_data['conversation_history'], list):
+            hydrated_history = []
+            for turn_data in state_data['conversation_history']:
+                if isinstance(turn_data, dict):
+                    hydrated_history.append(Turn(**turn_data))
+                else:
+                    logger.warning(f"Skipping invalid item in conversation_history for project '{project.name}': {turn_data}")
+            state_data['conversation_history'] = hydrated_history
+        else:
+            state_data['conversation_history'] = [] # Ensure it exists as a list
             
-        return ProjectState(**state_data)
-    except FileNotFoundError: 
-        print(f"PERSISTENCE ERROR: State file {state_file_path} vanished before read for '{project.name}'.")
+        # Basic validation
+        if not state_data.get('project_id'):
+             logger.warning(f"Loaded state for project '{project.name}' is missing 'project_id'. Attempting to use current project ID: {project.id}")
+             state_data['project_id'] = project.id # Try to fix it
+
+        project_state = ProjectState(**state_data)
+        logger.info(f"Successfully loaded project state for '{project.name}'. Status: {project_state.current_status}, History turns: {len(project_state.conversation_history)}")
+        return project_state
+        
+    except FileNotFoundError: # Should be caught by exists() check, but safeguard
+        logger.error(f"State file {state_file_path} vanished before read for '{project.name}'.")
         return None
     except json.JSONDecodeError as e:
-        print(f"PERSISTENCE ERROR: Failed to decode state file {state_file_path} for '{project.name}'. Error: {e}")
+        logger.error(f"Failed to decode state file {state_file_path} for '{project.name}'. Error: {e}", exc_info=True)
         return None
     except TypeError as e: 
-        print(f"PERSISTENCE ERROR: Type error loading project state for '{project.name}' from {state_file_path}. Data malformed. Error: {e}")
+        logger.error(f"Type error loading project state for '{project.name}' from {state_file_path}. Data malformed? Error: {e}", exc_info=True)
         return None
     except IOError as e: 
-        print(f"PERSISTENCE ERROR: Could not read state file {state_file_path} for '{project.name}': {e}")
+        logger.error(f"Could not read state file {state_file_path} for '{project.name}': {e}", exc_info=True)
         return None
     except Exception as e: 
-        print(f"PERSISTENCE ERROR: Unexpected error loading project state for '{project.name}': {e}")
+        logger.critical(f"Unexpected error loading project state for '{project.name}' from {state_file_path}: {e}", exc_info=True)
         return None
 
 def save_project_state(project: Project, state: ProjectState):
     if not project or not project.workspace_root_path:
-        print("PERSISTENCE ERROR: Invalid project (no workspace_root_path) for saving state.")
+        logger.error("Invalid project provided (missing or no workspace_root_path) for saving state.")
         raise PersistenceError("Invalid project for saving state.")
     if not state:
-        print(f"PERSISTENCE ERROR: Invalid state object provided for project '{project.name}'.")
+        logger.error(f"Invalid state object provided for saving project '{project.name}'.")
         raise PersistenceError("Invalid state object provided.")
 
-    state_dir = _ensure_project_state_dir_exists(project.workspace_root_path)
+    # Use absolute path for reliability
+    abs_workspace_path = os.path.abspath(project.workspace_root_path)
+    state_dir = _ensure_project_state_dir_exists(abs_workspace_path)
     if not state_dir: 
-        print(f"PERSISTENCE ERROR: Failed to ensure state directory for project '{project.name}'. Cannot save state.")
+        logger.error(f"Failed to ensure state directory exists for project '{project.name}' at '{abs_workspace_path}'. Cannot save state.")
         raise PersistenceError(f"Failed to create/access state directory for {project.name}")
 
     state_file_path = os.path.join(state_dir, PROJECT_STATE_FILE_NAME)
-    state_data = asdict(state)
+    logger.debug(f"Attempting to save project state for '{project.name}' to {state_file_path}")
     try:
+        # Convert state (including Turn objects) to dict for JSON serialization
+        state_data = asdict(state)
         with open(state_file_path, 'w') as f:
             json.dump(state_data, f, indent=4)
+        logger.info(f"Successfully saved project state for '{project.name}' (Status: {state.current_status})")
     except (IOError, TypeError) as e: 
-        print(f"PERSISTENCE ERROR: Failed to save project state for '{project.name}' to {state_file_path}: {e}")
+        logger.error(f"Failed to save project state for '{project.name}' to {state_file_path}: {e}", exc_info=True)
         raise PersistenceError(f"Failed to save project state for {project.name}: {e}") from e
     except Exception as e: 
-        print(f"PERSISTENCE ERROR: Unexpected error saving project state for '{project.name}': {e}")
+        logger.critical(f"Unexpected error saving project state for '{project.name}' to {state_file_path}: {e}", exc_info=True)
         raise PersistenceError(f"Unexpected error saving project state for {project.name}: {e}") from e
 
-def add_project(name: str, workspace_root_path: str, overall_goal: str) -> Optional[Project]:
+def add_project(project_details: Project) -> Optional[Project]: # Modified to take Project object
+    if not isinstance(project_details, Project):
+        logger.error(f"Invalid input to add_project. Expected Project object, got {type(project_details)}")
+        return None
+
+    name = project_details.name
+    workspace_root_path = project_details.workspace_root_path
+    overall_goal = project_details.overall_goal
+
     if not os.path.isabs(workspace_root_path):
-        print(f"PERSISTENCE INFO: workspace_root_path '{workspace_root_path}' for project '{name}' must be an absolute path. Project not added.")
-        return None 
-        
+        logger.warning(f"Project '{name}' workspace path '{workspace_root_path}' is not absolute. Resolving relative to current directory. Consider using absolute paths.")
+        workspace_root_path = os.path.abspath(workspace_root_path)
+        logger.info(f"Resolved workspace path for '{name}' to: {workspace_root_path}")
+
     try:
         projects = load_projects()
     except PersistenceError as e:
-        print(f"PERSISTENCE ERROR: Cannot add project, failed to load existing projects: {e}")
+        logger.error(f"Cannot add project '{name}', failed to load existing projects: {e}", exc_info=True)
         return None 
 
     if any(p.name == name for p in projects):
-        print(f"PERSISTENCE INFO: Project with name '{name}' already exists.")
+        logger.info(f"Project with name '{name}' already exists. Returning existing project.")
         return next((p for p in projects if p.name == name), None)
 
+    # Assign an ID if the input project doesn't have one
     new_project = Project(name=name, workspace_root_path=workspace_root_path, overall_goal=overall_goal)
     projects.append(new_project)
     try:

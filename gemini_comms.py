@@ -7,6 +7,11 @@ from typing import Optional, List, Dict, Any
 from models import Turn
 import time
 from dataclasses import dataclass # Assuming Turn is defined elsewhere or add here
+from datetime import datetime
+import logging # Added
+
+# Get the logger instance
+logger = logging.getLogger("orchestrator_prime")
 
 # Standard Operating Procedure for Cursor (Dev Engineer)
 CURSOR_SOP_PROMPT = """\
@@ -96,6 +101,7 @@ class Turn: # Temporary definition if models.py import fails
 
 class GeminiCommunicator:
     def __init__(self):
+        logger.info("GeminiCommunicator initializing...")
         self.model = None
         self.model_name = "Unknown"
         self.config = ConfigManager()
@@ -104,52 +110,59 @@ class GeminiCommunicator:
         # self._test5_first_call_done = False # RESTORED - REMOVED FOR TEST 5
 
         if MOCK_GEMINI_ENABLED:
-            print("GeminiCommunicator initialized in MOCK mode.")
+            logger.info("GeminiCommunicator initialized in MOCK mode.")
             return
 
         if not api_key or api_key == 'YOUR_API_KEY_HERE':
-            print("ERROR (GeminiComms): API Key not configured in config.ini. Live mode disabled.")
-            # Potentially raise an error or set a flag indicating disabled state
-            return
+            logger.error("API Key not configured in config.ini. Gemini live mode will be disabled.")
+            # This is a critical configuration error, but we allow the app to start to report it.
+            return # model remains None
 
         try:
             genai.configure(api_key=api_key)
-            # Check available models supporting 'generateContent'
-            print("--- Checking Available Gemini Models (supporting generateContent) ---")
+            logger.info("Checking Available Gemini Models (supporting generateContent)...")
             models_found = False
+            available_models_for_log = []
             for m in genai.list_models():
                 if 'generateContent' in m.supported_generation_methods:
-                    print(f"  - {m.name}")
+                    available_models_for_log.append(m.name)
                     models_found = True
+            if available_models_for_log:
+                logger.debug(f"Available models supporting 'generateContent': {available_models_for_log}")
+            
             if not models_found:
-                print("  WARNING: No models found supporting 'generateContent' with this API key/setup.")
+                logger.warning("No models found supporting 'generateContent' with this API key/setup.")
             else:
-                 # Attempt to load the configured model
-                print(f"--- Attempting to load configured model: {self.model_name} ---")
+                logger.info(f"Attempting to load configured model: {self.model_name}")
                 self.model = genai.GenerativeModel(self.model_name)
-                # Optionally, make a small test call like count_tokens if available
-                print(f"Successfully configured Gemini and loaded model: {self.model_name}")
+                # Test call to verify model (e.g., count_tokens on a short string)
+                try:
+                    self.model.count_tokens("test") # Simple test call
+                    logger.info(f"Successfully configured Gemini and loaded model: {self.model_name}")
+                except Exception as model_test_e:
+                    logger.error(f"Failed to verify loaded model '{self.model_name}' with a test call: {model_test_e}", exc_info=True)
+                    self.model = None # Invalidate model if test fails
 
         except Exception as e:
-            print(f"ERROR (GeminiComms): Failed to configure Gemini or load model '{self.model_name}'. Error: {type(e).__name__} - {e}")
-            self.model = None # Ensure model is None if init fails
+            logger.critical(f"Failed to configure Gemini or load model '{self.model_name}'. Error: {type(e).__name__} - {e}", exc_info=True)
+            self.model = None
 
     def _estimate_tokens(self, text: str) -> int:
-        if not MOCK_GEMINI_ENABLED and hasattr(self, 'model') and self.model:
-            try:
-                pass 
-            except Exception as e:
-                print(f"Warning (GeminiComms): count_tokens call failed: {e}. Using rough estimate.")
-        return len(text) // 4 
+        # This is a very rough heuristic. Actual tokenization depends on the model.
+        # Google models usually count 1 token ~ 4 chars for English.
+        # Consider using model.count_tokens if available and reliable for estimates.
+        estimated = len(text) // 4 
+        logger.debug(f"Estimated tokens for text length {len(text)}: {estimated}")
+        return estimated
 
     def summarize_text(self, text_to_summarize: str, max_summary_tokens: int = 1000) -> Optional[str]:
         if MOCK_GEMINI_ENABLED:
-            print(f"MOCK GEMINI (Summarizer): Summarizing text of length {len(text_to_summarize)}.")
+            logger.info(f"MOCK GEMINI (Summarizer): Summarizing text of length {len(text_to_summarize)}.")
             time.sleep(0.1) 
             return f"[Mock Summary of input. Original length: {len(text_to_summarize)} chars. Max tokens: {max_summary_tokens}]"
 
-        if not hasattr(self, 'model') or not self.model:
-            print("ERROR (GeminiComms Summarizer): Model not initialized (live mode & API key issue or other init failure).")
+        if not self.model:
+            logger.error("Gemini Summarizer: Model not initialized. Cannot summarize.")
             return None
 
         summarization_prompt = f"""\
@@ -193,107 +206,67 @@ Summary:"""
                                   max_history_turns: int,
                                   max_context_tokens: int, 
                                   cursor_log_content: Optional[str],
-                                  initial_project_structure_overview: Optional[str] = None  # New parameter
+                                  initial_project_structure_overview: Optional[str] = None
                                   ) -> Dict[str, Any]:
-        # TEMP FOR TEST 6 - RESTORED
-        # if cursor_log_content is not None:
-        #     print("DEBUG_GEMINI_COMMS: Test 6 - Forcing TASK_COMPLETE because log content provided.")
-        #     return {"status": "COMPLETE", "content": "Mocked Task Complete"}
-        # END TEMP FOR TEST 6 - RESTORED
+        # Construct the prompt
+        prompt_parts = []
+        prompt_parts.append(f"Overall Project Goal: {project_goal}\n")
 
-        # ---- START TEMPORARY MODIFICATION FOR USER INPUT SIMULATION ----
-        # if cursor_log_content is None and full_conversation_history and full_conversation_history[-1].sender == "USER":
-        #     print("DEBUG_GEMINI_COMMS: Forced PROCEED after simulated user input for testing.")
-        #     return {"status": "INSTRUCTION", "content": "Okay, I see the project structure. Now, please create a file named 'test_file.py' in the root and write 'print(\\\'Hello World\\\')' into it."}
-        # ---- END TEMPORARY MODIFICATION ----
-
-        if MOCK_GEMINI_ENABLED:
-            print(f"MOCK GEMINI (Main Call): Goal: '{project_goal[:30]}...'")
-            time.sleep(0.2) 
-            if not cursor_log_content: 
-                return {"status": "INSTRUCTION", "content": f"Mock Instruction (Initial for Goal: {project_goal[:30]}...)"}
-            else: 
-                return {"status": "INSTRUCTION", "content": f"Mock Instruction (Based on log: {cursor_log_content[:50]}...)"}
-
-        if not hasattr(self, 'model') or not self.model:
-            return {"status": "ERROR", "content": "Gemini model not initialized (live mode & API key issue or other init failure)."}
-
-        prompt_construction = [] # Initialize as list
-
-        # New: Add initial project structure overview if provided
         if initial_project_structure_overview:
-            prompt_construction.append(f"--- Initial Project Structure Overview ---\\n{initial_project_structure_overview}\\n---\\n")
-
-        prompt_construction.append(f"Overall Project Goal: {project_goal}\\n") # Append, don't assign
+            prompt_parts.append(f"--- Initial Project Structure Overview ---\n{initial_project_structure_overview}\n---\n")
 
         if current_context_summary:
-            prompt_construction.append(f"--- Previously Summarized Context ---\\n{current_context_summary}\\n---\\n")
-        
-        recent_history_text_parts = []
+            prompt_parts.append(f"--- Previously Summarized Context ---\n{current_context_summary}\n---\n")
+        else:
+            prompt_parts.append("--- No Previously Summarized Context ---\n")
+
+        prompt_parts.append("--- Recent Conversation History ---")
         if full_conversation_history:
-            start_index = max(0, len(full_conversation_history) - max_history_turns)
-            for turn in full_conversation_history[start_index:]:
-                sender_prefix = turn.sender 
-                if turn.sender == "USER": sender_prefix = "User (Human)"
-                elif turn.sender == "GEMINI_MANAGER": sender_prefix = "You (Dev Manager)"
-                elif turn.sender == "CURSOR_LOG_SUMMARY": sender_prefix = "Dev Engineer (Cursor Log)"
-                elif turn.sender == "ORCHESTRATOR_STATUS": sender_prefix = "System Status"
-                recent_history_text_parts.append(f"[{sender_prefix} @ {turn.timestamp}]: {turn.message}")
-        
-        log_text_part = ""
+            for turn in full_conversation_history[-max_history_turns:]:
+                # Ensure timestamp is a string. If it's a datetime object, format it.
+                ts = turn.timestamp
+                if isinstance(ts, datetime):
+                    ts = ts.strftime("%Y-%m-%d %H:%M:%S")
+                prompt_parts.append(f"[{turn.sender} @ {ts}]: {turn.message}")
+        else:
+            prompt_parts.append("No recent conversation history available.")
+        prompt_parts.append("---\n")
+
         if cursor_log_content:
-            log_text_part = f"\n--- Latest Dev Engineer (Cursor) Log ---\n{cursor_log_content}\n---"
-
-        guidance_instructions = f"""
-Based on the overall goal, summarized context, recent history, and the Dev Engineer's latest log (if any), provide the *next single, actionable instruction* for the Dev Engineer.
-If the Dev Engineer indicated `CLARIFICATION_NEEDED:`, answer their question and provide the next instruction.
-If the Dev Engineer indicated `ERROR:`, analyze the error and provide guidance or a corrected instruction.
-If you need input from the human user before proceeding, respond ONLY with `{GEMINI_MARKER_NEED_INPUT} [Your question for the user]`.
-If the overall project goal appears to be complete based on the Dev Engineer's logs and the history, respond ONLY with `{GEMINI_MARKER_TASK_COMPLETE}`.
-If you encounter an internal problem or cannot meaningfully proceed, respond ONLY with `{GEMINI_MARKER_SYSTEM_ERROR} [Brief error description]`.
-Focus on one discrete step at a time for the Dev Engineer. Adhere to their SOP.
-"""
-        sop_context = f"\nReference: The Dev Engineer SOP is:\n{CURSOR_SOP_PROMPT}"
+            prompt_parts.append(f"--- Dev Engineer's Latest Log (from cursor_step_output.txt) ---\n{cursor_log_content}\n---\n")
+        else:
+            prompt_parts.append("--- No New Log from Dev Engineer ---\n")
         
-        def build_prompt_segment(current_prompt_list, recent_hist_parts, log_part_str, sop_str, guidance_str_local):
-            # Construct the prompt string by joining parts
-            # Order: Main Goal, Structure, Summary, History, Log, Guidance, SOP
-            
-            # Start with elements that are already in current_prompt_list
-            # (Goal, Structure, Summary)
-            temp_prompt_parts = list(current_prompt_list)
+        # Explicitly tell Gemini to use the overview if present
+        prompt_parts.append("--- Your Instructions to Dev Engineer ---")
+        prompt_parts.append("Based on the overall goal, the *provided initial project structure overview (if present)*, summarized context, recent history, and the Dev Engineer's latest log (if any), provide the *next single, actionable instruction* for the Dev Engineer.")
+        prompt_parts.append("If the Dev Engineer indicated `CLARIFICATION_NEEDED:`, answer their question and provide the next instruction.")
+        prompt_parts.append("If the Dev Engineer indicated `ERROR:`, analyze the error and provide guidance or a corrected instruction.")
+        prompt_parts.append("If you need input from the human user before proceeding, respond ONLY with `NEED_USER_INPUT: [Your question for the user]`.")
+        prompt_parts.append("If the overall project goal appears to be complete based on the Dev Engineer's logs and the history, respond ONLY with `TASK_COMPLETE`.")
+        prompt_parts.append("If you encounter an internal problem or cannot meaningfully proceed, respond ONLY with `SYSTEM_ERROR: [Brief error description]`.")
+        prompt_parts.append("Focus on one discrete step at a time for the Dev Engineer. Adhere to their SOP.\n")
+        prompt_parts.append("Reference: The Dev Engineer SOP is:")
+        prompt_parts.append(CURSOR_SOP_PROMPT) # SOP_PROMPT_TEXT should be a class/instance var
 
-            if recent_hist_parts:
-                temp_prompt_parts.append("\n--- Recent Conversation History ---")
-                temp_prompt_parts.extend(recent_hist_parts)
-                temp_prompt_parts.append("---\n")
-            
-            if log_part_str: # This is the Dev Engineer's latest log
-                temp_prompt_parts.append(log_part_str) # log_part_str already has --- markers
+        full_prompt = "\n".join(prompt_parts)
 
-            temp_prompt_parts.append("\n--- Your Instructions to Dev Engineer ---")
-            temp_prompt_parts.append(guidance_str_local)
-            temp_prompt_parts.append(sop_str) # SOP at the end as reference
-            
-            return "\n".join(temp_prompt_parts)
-
-        # Iteratively build the prompt, checking token count (simplified for this example)
-        # In a real scenario, you'd be more precise with token counting and history truncation
+        # Estimate token count (very rough, actual tokenization is complex)
+        estimated_tokens = len(full_prompt.split()) # Simple space-based token estimation
         
-        final_prompt_text = build_prompt_segment(prompt_construction, recent_history_text_parts, log_text_part, sop_context, guidance_instructions)
-        
-        # DEBUG: Print the final prompt
-        print("\n--- FINAL PROMPT TO GEMINI ---")
-        print(final_prompt_text)
-        print("--- END OF FINAL PROMPT ---\n")
+        # Truncated logging of the prompt
+        if len(full_prompt) > 300:
+            print(f"--- FINAL PROMPT TO LIVE GEMINI ({self.model_name}) Est. Tokens: {estimated_tokens} ---\n{full_prompt[:200]}...[TRUNCATED]...{full_prompt[-100:]}\n-------------------------\n")
+        else:
+            print(f"--- FINAL PROMPT TO LIVE GEMINI ({self.model_name}) Est. Tokens: {estimated_tokens} ---\n{full_prompt}\n-------------------------\n")
 
         try:
             generation_config = genai.types.GenerationConfig(
                 max_output_tokens=max_context_tokens, 
                 temperature=0.4 
             )
-            print(f"GeminiComms: Calling live Gemini API (model: {self.model_name}). Est. Prompt Tokens: {self._estimate_tokens(final_prompt_text)}")
-            response = self.model.generate_content(final_prompt_text, generation_config=generation_config)
+            print(f"GeminiComms: Calling live Gemini API (model: {self.model_name}). Est. Prompt Tokens: {self._estimate_tokens(full_prompt)}")
+            response = self.model.generate_content(full_prompt, generation_config=generation_config)
             
             if not response.parts:
                 if response.prompt_feedback and response.prompt_feedback.block_reason:

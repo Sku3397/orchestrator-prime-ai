@@ -1,0 +1,14 @@
+{
+    "project_id": "5bcc8cdd-c0fa-4320-bf22-6cd52fa905ab",
+    "conversation_history": [
+        {
+            "sender": "USER",
+            "message": "Start test task for context check: please list the main files you see.",
+            "timestamp": "2025-05-07T23:50:00.714666",
+            "metadata": null
+        }
+    ],
+    "current_status": "ERROR",
+    "last_instruction_sent": null,
+    "context_summary": null
+}

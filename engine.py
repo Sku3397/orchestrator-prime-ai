@@ -4,16 +4,21 @@ import shutil
 from datetime import datetime
 from enum import Enum, auto
 from typing import Optional, Callable, List, Dict, Any
-import threading # For GUI updates from watchdog thread
-import queue # For getting results from threaded Gemini calls
+import threading
+import queue
 import uuid
-import traceback # Added for printing stack
-import json # Added import
+import traceback
+import json
+import logging
 
-from models import Project, ProjectState, Turn # MODIFIED
-from persistence import load_project_state, save_project_state, get_project_by_id, load_projects, PersistenceError # MODIFIED
-from gemini_comms import GeminiCommunicator # MODIFIED
-from config_manager import ConfigManager # MODIFIED
+from models import Project, ProjectState, Turn
+from persistence import load_project_state, save_project_state, get_project_by_id, load_projects, PersistenceError
+from gemini_comms import GeminiCommunicator
+from config_manager import ConfigManager
+
+# Get the logger instance (assuming it's configured in main.py or another central place)
+# If not, this will create a default logger. For best practice, ensure it's configured.
+logger = logging.getLogger("orchestrator_prime")
 
 # Watchdog is an external dependency, ensure it's handled if not available
 try:
@@ -22,807 +27,955 @@ try:
 except ImportError:
     Observer = None
     FileSystemEventHandler = None
-    print("WARNING (Engine): watchdog library not found. File watching will be disabled.")
-
-# --- Status Constants ---
-STATUS_IDLE = "IDLE"
-STATUS_LOADING_PROJECT = "LOADING_PROJECT"
-STATUS_PROJECT_LOADED = "PROJECT_LOADED"
-STATUS_RUNNING_CALLING_GEMINI = "RUNNING_CALLING_GEMINI"
-STATUS_RUNNING_WAITING_LOG = "RUNNING_WAITING_LOG"
-STATUS_PROCESSING_LOG = "PROCESSING_LOG"
-STATUS_PAUSED_WAITING_USER_INPUT = "PAUSED_WAITING_USER_INPUT"
-STATUS_SUMMARIZING_CONTEXT = "SUMMARIZING_CONTEXT"
-STATUS_TASK_COMPLETE = "TASK_COMPLETE"
-
-# --- Error Status Constants ---
-STATUS_ERROR = "ERROR" # Generic error
-STATUS_ERROR_API_AUTH = "ERROR_API_AUTH" # Specific to API key issues
-STATUS_ERROR_GEMINI_CALL = "ERROR_GEMINI_CALL" # General error from Gemini
-STATUS_ERROR_GEMINI_TIMEOUT = "ERROR_GEMINI_TIMEOUT" # Gemini call timed out
-STATUS_ERROR_FILE_WRITE = "ERROR_FILE_WRITE" # Cannot write instruction/state
-STATUS_ERROR_FILE_READ_LOG = "ERROR_FILE_READ_LOG" # Cannot read cursor log
-STATUS_ERROR_PERSISTENCE = "ERROR_PERSISTENCE" # Error loading/saving state/projects
-STATUS_ERROR_WATCHER = "ERROR_WATCHER" # Watchdog failed to start/run
-STATUS_ERROR_CURSOR_TIMEOUT = "ERROR_CURSOR_TIMEOUT" # Cursor log timeout
-
-# Timeout for Gemini calls in seconds
-GEMINI_CALL_TIMEOUT_SECONDS = 120 # 2 minutes
-CURSOR_LOG_TIMEOUT_SECONDS = 300 # 5 minutes # RESTORED AFTER TEST 8
+    logger.warning("watchdog library not found. File watching will be disabled.")
 
 class EngineState(Enum):
     IDLE = auto()
     LOADING_PROJECT = auto()
-    PROJECT_SELECTED = auto() # Ready to start a task for the selected project
-    RUNNING_WAITING_INITIAL_GEMINI = auto() # After user starts, before first Gemini call
-    RUNNING_WAITING_LOG = auto() # Instruction sent to Cursor, waiting for cursor_step_output.txt
-    RUNNING_PROCESSING_LOG = auto() # Log received, about to call Gemini
-    RUNNING_CALLING_GEMINI = auto() # Calling Gemini API
-    PAUSED_WAITING_USER_INPUT = auto() # Gemini requested user input
-    TASK_COMPLETE = auto() # Gemini reported TASK_COMPLETE
+    PROJECT_SELECTED = auto()
+    RUNNING_WAITING_INITIAL_GEMINI = auto()
+    RUNNING_WAITING_LOG = auto()
+    RUNNING_PROCESSING_LOG = auto()
+    RUNNING_CALLING_GEMINI = auto()
+    PAUSED_WAITING_USER_INPUT = auto()
+    TASK_COMPLETE = auto()
     ERROR = auto()
+    # STOPPED state was removed as PROJECT_SELECTED or IDLE can represent a stopped task
 
 class OrchestrationEngine:
     CURSOR_SOP_PROMPT_TEXT = """... (Full SOP content as defined previously) ...""" # Keep SOP text here
 
-    def __init__(self, gui_update_callback: Optional[Callable[[str, Any], None]] = None):
+    def __init__(self):
+        logger.info("OrchestrationEngine initializing...")
         self.current_project: Optional[Project] = None
         self.current_project_state: Optional[ProjectState] = None
         self.state: EngineState = EngineState.IDLE
-        self.gemini_client = GeminiCommunicator() # Might raise if config is bad
-        self.config = ConfigManager()
-        self.gui_update_callback = gui_update_callback # To notify GUI of changes
-        self.file_observer: Optional['Observer'] = None # Use string literal for type hint
-        self._log_handler: Optional['LogFileCreatedHandler'] = None # Renamed for clarity, also use string literal
+        try:
+            self.gemini_client = GeminiCommunicator() # Might raise if config is bad
+            self.config = ConfigManager()
+            logger.info("GeminiCommunicator and ConfigManager initialized successfully.")
+        except ValueError as e:
+            logger.critical(f"Failed to initialize GeminiCommunicator or ConfigManager: {e}", exc_info=True)
+            # Propagate the error or handle it such that engine is in a clear error state
+            self.gemini_client = None # Ensure it's None if init failed
+            self.config = None
+            self._last_critical_error = f"Initialization failed: {e}" # Store critical error
+            self.state = EngineState.ERROR # Set engine state to ERROR
+            self.last_error_message = self._last_critical_error
+            # No need to raise further if we want the app to attempt to run and show this error
+
+        self.file_observer: Optional['Observer'] = None
+        self._log_handler: Optional['LogFileCreatedHandler'] = None
         self.dev_logs_dir: str = ""
         self.dev_instructions_dir: str = ""
-        self.last_error_message: Optional[str] = None
-        self._last_critical_error: Optional[str] = None # Initialize the missing attribute
-        self._cursor_timeout_timer: Optional[threading.Timer] = None # Added for timeout
-
-        self._engine_lock = threading.Lock() # Main lock for critical state modifications
+        self.last_error_message: Optional[str] = None if not hasattr(self, 'last_error_message') else self.last_error_message
+        self.pending_user_question: Optional[str] = None
+        self._last_critical_error: Optional[str] = None if not hasattr(self, '_last_critical_error') else self._last_critical_error
+        self._cursor_timeout_timer: Optional[threading.Timer] = None
+        self._shutdown_complete = False
+        self._engine_lock = threading.Lock()
         self._gemini_call_thread: Optional[threading.Thread] = None
-        print("OrchestrationEngine initialized.")
-        if self.gemini_client:
-            print("GeminiCommunicator initialized successfully.")
-        else:
-            print("GeminiCommunicator initialization failed. Engine will be in a broken state.")
-            self._last_critical_error = "GeminiCommunicator initialization failed."
+        if self._last_critical_error:
+             logger.error(f"Engine started with critical error: {self._last_critical_error}")
 
-    def _notify_gui(self, message_type: str, data: Any = None):
-        if self.gui_update_callback:
-            try:
-                self.gui_update_callback(message_type, data)
-            except Exception as e:
-                print(f"Error in GUI callback ({message_type}): {e}")
-        # Always print to console for headless debugging or if GUI callback fails
-        # print(f"Engine Notification: Type={message_type}, Data={data}")
-
-    def _set_state(self, new_state: EngineState, error_message: Optional[str] = None):
-        # If error_message is provided but new_state isn't ERROR, it's contextual info for the state.
-        # If new_state is ERROR, error_message should ideally be present.
-        if self.state != new_state or error_message: # Log if state changes or if there's a message for the current state
+    def _set_state(self, new_state: EngineState, detail_message: Optional[str] = None):
+        if self.state != new_state or detail_message:
+            old_state_name = self.state.name
             self.state = new_state
-            if new_state == EngineState.ERROR:
-                self.last_error_message = error_message if error_message else "Unknown error" # Ensure error message exists
-                print(f"Engine state changed to: {self.state.name} - Error: {self.last_error_message}")
-                self._notify_gui("state_change", self.state.name) # Notify state change first
-                self._notify_gui("error", self.last_error_message) # Then notify the error details
-            else:
-                # For non-error states, an error_message is just a status detail
-                status_detail = f" - Detail: {error_message}" if error_message else ""
-                print(f"Engine state changed to: {self.state.name}{status_detail}")
-                self._notify_gui("state_change", self.state.name)
-                if error_message: # If there was a detail message for a non-error state, send as status update
-                    self._notify_gui("status_update", error_message)
-            
-            if self.current_project_state:
-                self.current_project_state.current_status = self.state.name
-                if self.current_project:
-                    save_project_state(self.current_project, self.current_project_state)
+            log_message_prefix = f"Engine state changed from {old_state_name} to {self.state.name}"
 
-    def set_active_project(self, project: Project) -> bool:
+            if new_state == EngineState.ERROR:
+                self.last_error_message = detail_message if detail_message else "Unknown error"
+                logger.error(f"{log_message_prefix} - Error: {self.last_error_message}")
+            elif new_state == EngineState.PAUSED_WAITING_USER_INPUT:
+                self.pending_user_question = detail_message 
+                logger.info(f"{log_message_prefix} - Waiting for user input. Question: {self.pending_user_question}")
+            else:
+                status_detail = f" - Detail: {detail_message}" if detail_message else ""
+                logger.info(f"{log_message_prefix}{status_detail}")
+            
+            if self.current_project_state and self.current_project:
+                self.current_project_state.current_status = self.state.name
+                try:
+                    save_project_state(self.current_project, self.current_project_state)
+                    logger.debug(f"Saved project state for {self.current_project.name} with status {self.state.name}")
+                except PersistenceError as e:
+                    logger.error(f"Failed to save project state for {self.current_project.name}: {e}", exc_info=True)
+                    self.last_error_message = f"Failed to save project state: {e}"
+
+    def set_active_project(self, project_name: str) -> bool:
         with self._engine_lock:
-            if hasattr(self, '_last_critical_error') and self._last_critical_error:
-                # self._notify_gui("error", self._last_critical_error) # _set_state will handle this
+            if self._last_critical_error:
+                logger.error(f"set_active_project called but engine has critical error: {self._last_critical_error}")
                 self._set_state(EngineState.ERROR, self._last_critical_error)
                 return False
 
-            self._set_state(EngineState.LOADING_PROJECT, f"Loading project: {project.name}...")
-            self.current_project = project
+            logger.info(f"Attempting to set active project to: {project_name}")
+            self._set_state(EngineState.LOADING_PROJECT, f"Loading project: {project_name}...")
+            
+            projects = load_projects() # This can raise PersistenceError
+            project_to_load: Optional[Project] = None
+            for p in projects:
+                if p.name == project_name:
+                    project_to_load = p
+                    break
+            
+            if not project_to_load:
+                self._set_state(EngineState.ERROR, f"Project '{project_name}' not found.")
+                self.current_project = None
+                return False
+
+            self.current_project = project_to_load
+            logger.info(f"Setting active project to: {self.current_project.name}")
+
             try:
-                loaded_state = load_project_state(project)
-            except Exception as e:
-                print(f"Error loading project state for {project.name}: {e}")
-                self._set_state(EngineState.ERROR, f"Persistence Error: Failed to load state for {project.name}: {e}")
-                self.current_project = None # Clear project if state loading fails critically
+                loaded_state = load_project_state(self.current_project)
+            except PersistenceError as e:
+                logger.error(f"Error loading project state for {self.current_project.name}: {e}", exc_info=True)
+                self._set_state(EngineState.ERROR, f"Persistence Error: Failed to load state for {self.current_project.name}: {e}")
+                self.current_project = None
                 return False
 
             if loaded_state:
                 self.current_project_state = loaded_state
-                if self.current_project_state.current_status not in [EngineState.PAUSED_WAITING_USER_INPUT.name, EngineState.IDLE.name, EngineState.PROJECT_SELECTED.name, EngineState.TASK_COMPLETE.name] and not self.current_project_state.current_status.startswith("ERROR"):
-                     self.current_project_state.current_status = EngineState.PROJECT_SELECTED.name
-            else: 
-                proj_id = project.id if project.id else str(uuid.uuid4()) # Assuming project might lack an ID initially
-                if not project.id:
-                    project.id = proj_id # Assign back if generated
-                    # TODO: Need to save the updated project list if ID was generated!
-                self.current_project_state = ProjectState(project_id=proj_id)
-            
-            try: # Ensure directories exist
-                dev_logs_base = os.path.join(project.workspace_root_path, self.config.get_default_dev_logs_dir())
-                dev_instructions_base = os.path.join(project.workspace_root_path, self.config.get_default_dev_instructions_dir())
-                os.makedirs(dev_logs_base, exist_ok=True)
-                os.makedirs(os.path.join(dev_logs_base, "processed"), exist_ok=True)
-                os.makedirs(dev_instructions_base, exist_ok=True)
-            except OSError as e:
-                self._set_state(EngineState.ERROR, f"File Write Error: Failed to create project directories for {project.name}: {e}")
-                return False
-
-            self.dev_logs_dir = dev_logs_base
-            self.dev_instructions_dir = dev_instructions_base
-            
-            final_state_to_set = EngineState.PROJECT_SELECTED
-            
-            try:
-                loaded_engine_state_name = self.current_project_state.current_status
-                if loaded_engine_state_name == EngineState.PAUSED_WAITING_USER_INPUT.name:
-                     final_state_to_set = EngineState.PAUSED_WAITING_USER_INPUT
-                elif loaded_engine_state_name == EngineState.ERROR.name:
-                     # If loaded state is ERROR, we need the accompanying message.
-                     # This assumes last_error_message in ProjectState would be good.
-                     # For now, _set_state for ERROR will use a generic if not passed one.
-                     # This part might need refinement if we want to preserve specific old error messages.
-                     final_state_to_set = EngineState.ERROR 
-                     # We need to fetch the actual error message that caused this ERROR state if possible
-                     # For now, if we land here, set_active_project will use a generic "Error state loaded"
-                     # Or rely on self.last_error_message if it was set by a previous operation in this session.
-                     # This is tricky. Let's assume for now that if a project *loads* into an ERROR state,
-                     # it's an error with the project loading itself, or it should be cleared.
-                     # The `if not self.current_project_state.current_status.startswith("ERROR")`
-                     # above should prevent an old generic error state from persisting without reason.
-
-            except KeyError: # This was a bug, should be AttributeError if .name is accessed on non-Enum
-                 print(f"Warning: Loaded project state '{self.current_project_state.current_status}' is not a valid EngineState object. Resetting to PROJECT_SELECTED.")
-                 final_state_to_set = EngineState.PROJECT_SELECTED
-                 self.current_project_state.current_status = EngineState.PROJECT_SELECTED.name # Store the name
-            
-            # Pass the specific error message if we are setting the state to ERROR
-            if final_state_to_set == EngineState.ERROR:
-                # If we loaded an error state, we need to find what the error message was.
-                # This is not stored directly in a way that final_state_to_set can use.
-                # For now, let's clear such an error state upon loading.
-                # If a project's state.json says ERROR, it's better to load it as PROJECT_SELECTED
-                # and let new operations determine if there's a new error.
-                # The earlier check: `and not self.current_project_state.current_status.startswith("ERROR")`
-                # was intended to reset stale error states. Let's refine it.
-                if self.current_project_state.current_status == EngineState.ERROR.name:
-                    print(f"Project {project.name} loaded with a previous ERROR status. Resetting to PROJECT_SELECTED.")
-                    final_state_to_set = EngineState.PROJECT_SELECTED
+                logger.debug(f"Loaded project state for {self.current_project.name}. Raw status from file: '{self.current_project_state.current_status}'.")
+                # Reset non-terminal error states or intermediate states from previous sessions
+                current_status_from_file = self.current_project_state.current_status
+                try:
+                    loaded_enum_state = EngineState[current_status_from_file]
+                    if loaded_enum_state.name.startswith("ERROR") or \
+                       loaded_enum_state in [EngineState.RUNNING_WAITING_INITIAL_GEMINI, 
+                                            EngineState.RUNNING_WAITING_LOG, 
+                                            EngineState.RUNNING_PROCESSING_LOG, 
+                                            EngineState.RUNNING_CALLING_GEMINI]:
+                        logger.warning(f"Project {self.current_project.name} loaded with a previous transient or error status ('{current_status_from_file}'). Resetting to PROJECT_SELECTED.")
+                        self.current_project_state.current_status = EngineState.PROJECT_SELECTED.name
+                    elif loaded_enum_state == EngineState.PAUSED_WAITING_USER_INPUT:
+                        # This state is okay to load into, will be handled further down.
+                        pass 
+                except KeyError: # Not a valid EngineState name
+                    logger.warning(f"Project {self.current_project.name} loaded with an invalid status string ('{current_status_from_file}'). Resetting to PROJECT_SELECTED.")
                     self.current_project_state.current_status = EngineState.PROJECT_SELECTED.name
 
-                self._set_state(final_state_to_set) # Error message will be handled by _set_state if it's an actual error state
             else:
-                self._set_state(final_state_to_set)
+                logger.info(f"No existing project state for {self.current_project.name}. Creating new state.")
+                proj_id = self.current_project.id if self.current_project.id else str(uuid.uuid4())
+                if not self.current_project.id:
+                    self.current_project.id = proj_id
+                    # Note: This modification to project.id should be saved back to the main projects list.
+                    # This is currently a gap if a new project (not yet in projects.json) is selected.
+                    # add_project in persistence.py should assign an ID if not present and save it.
+                    logger.warning(f"Project '{self.current_project.name}' was missing an ID. Assigned: {proj_id}. This needs saving to projects.json.")
+                self.current_project_state = ProjectState(project_id=proj_id)
+            
+            try:
+                if not self.config: # Should have been caught by init
+                    raise ValueError("ConfigManager not initialized")
+                self.dev_logs_dir = os.path.join(self.current_project.workspace_root_path, self.config.get_default_dev_logs_dir())
+                self.dev_instructions_dir = os.path.join(self.current_project.workspace_root_path, self.config.get_default_dev_instructions_dir())
+                os.makedirs(self.dev_logs_dir, exist_ok=True)
+                os.makedirs(os.path.join(self.dev_logs_dir, "processed"), exist_ok=True)
+                os.makedirs(self.dev_instructions_dir, exist_ok=True)
+                logger.debug(f"Ensured project directories exist: Logs='{self.dev_logs_dir}', Instructions='{self.dev_instructions_dir}'")
+            except (OSError, ValueError) as e:
+                logger.error(f"File System Error: Failed to create project directories for {self.current_project.name}: {e}", exc_info=True)
+                self._set_state(EngineState.ERROR, f"File System Error: Failed to create project directories: {e}")
+                self.current_project = None
+                return False
 
-            save_project_state(self.current_project, self.current_project_state)
-
-            self._notify_gui("project_loaded", {
-                "project_name": project.name,
-                "goal": project.overall_goal,
-                "history": self.current_project_state.conversation_history,
-                "status": self.current_project_state.current_status
-            })
-            print(f"Active project set to: {project.name}")
-
+            final_state_to_set_name = self.current_project_state.current_status
+            final_state_detail = None
+            try:
+                final_state_to_set = EngineState[final_state_to_set_name]
+                logger.info(f"Project '{self.current_project.name}' loaded. Its state.json specified status: {final_state_to_set_name}")
+                if final_state_to_set == EngineState.PAUSED_WAITING_USER_INPUT:
+                    last_question = self._get_last_gemini_question_from_history()
+                    final_state_detail = last_question if last_question else "Gemini is waiting for your input. Please check conversation history."
+                    logger.info(f"Loaded into PAUSED_WAITING_USER_INPUT. Pending question: {final_state_detail}")
+                self._set_state(final_state_to_set, final_state_detail)
+            except KeyError: 
+                 logger.error(f"Invalid state name '{final_state_to_set_name}' in project state for {self.current_project.name}. Resetting to PROJECT_SELECTED.", exc_info=True)
+                 self._set_state(EngineState.PROJECT_SELECTED)
+                 self.current_project_state.current_status = EngineState.PROJECT_SELECTED.name # Persist the correction
+            
+            save_project_state(self.current_project, self.current_project_state) # Save potentially corrected state
+            logger.info(f"Active project successfully set. Project: '{self.current_project.name}', Engine state: '{self.state.name}'")
             return True
 
+    def _get_last_gemini_question_from_history(self) -> Optional[str]:
+        if self.current_project_state and self.current_project_state.conversation_history:
+            for turn in reversed(self.current_project_state.conversation_history):
+                # Assuming Turn model has a 'needs_user_input' flag, or Gemini's role indicates it.
+                # For now, let's assume questions are marked with a specific sender or a flag on the Turn object.
+                # This needs to align with how `_add_to_history` stores questions.
+                # A simple heuristic: last message from 'assistant' that implies a question.
+                # This part is refactored in _add_to_history to use a `needs_user_input` flag on the Turn object.
+                if turn.sender == "assistant" and turn.needs_user_input: # Check the flag
+                    logger.debug(f"Found last Gemini question in history: '{turn.message[:50]}...'")
+                    return turn.message
+        logger.debug("No specific Gemini question found in history marked with needs_user_input.")
+        return None
+
     def _start_file_watcher(self):
-        if not Observer or not FileSystemEventHandler: # Watchdog not available
+        if not Observer or not FileSystemEventHandler:
+            logger.error("File watcher (watchdog) not available. Cannot monitor log files.")
             self._set_state(EngineState.ERROR, "File watcher (watchdog) not available. Cannot monitor log files.")
             return
         if not self.current_project or not self.dev_logs_dir:
-            self._set_state(EngineState.ERROR, "Cannot start file watcher: No active project or logs directory.")
+            logger.error("Cannot start file watcher: No active project or logs directory defined.")
+            self._set_state(EngineState.ERROR, "Cannot start file watcher: No active project or logs directory defined.")
             return
 
-        # Ensure any existing observer is fully stopped before creating a new one
-        if self.file_observer and self.file_observer.is_alive(): # Check if it's alive
-            print("DEBUG_ENGINE: Attempting to stop existing file watcher before starting a new one...")
-            self.stop_file_watcher() # This will join and nullify
+        if self.file_observer and self.file_observer.is_alive():
+            logger.debug("Attempting to stop existing file watcher before starting a new one...")
+            self.stop_file_watcher()
 
-        # Defensive check if stop_file_watcher failed to nullify or wasn't called correctly
         if self.file_observer:
-            print("WARNING_ENGINE: file_observer was not None before creating a new one. Explicitly nullifying.")
-            self.file_observer = None # Ensure it's None
+            logger.warning("file_observer was not None before creating a new one. Forcing nullification.")
+            self.file_observer = None
 
         self._log_handler = LogFileCreatedHandler(self)
-        self.file_observer = Observer() # Create a new observer instance
+        self.file_observer = Observer()
         try:
             os.makedirs(self.dev_logs_dir, exist_ok=True)
             self.file_observer.schedule(self._log_handler, self.dev_logs_dir, recursive=False)
             self.file_observer.start()
-            self._start_cursor_timeout()
-            print(f"File watcher started on: {self.dev_logs_dir}")
-        except Exception as e: # More specific exceptions could be caught, e.g., for read-only FS
-            self._set_state(EngineState.ERROR, f"Failed to start file watcher: {e}")
-            self.file_observer = None # Ensure nullification on error
+            logger.info(f"File watcher started for directory: {self.dev_logs_dir}")
+        except Exception as e:
+            logger.error(f"Error starting file watcher on {self.dev_logs_dir}: {e}", exc_info=True)
+            self._set_state(EngineState.ERROR, f"Watcher Error: Failed to start file watcher: {e}")
+            self.file_observer = None
 
     def stop_file_watcher(self):
-        observer_to_stop = self.file_observer # Capture current observer
-        if observer_to_stop: # Check if there is an observer instance
-            self.file_observer = None # Nullify immediately to prevent re-entry issues or use by other parts
+        observer_to_stop = self.file_observer
+        log_handler_to_clear = self._log_handler
+        self.file_observer = None
+        self._log_handler = None
+
+        if observer_to_stop:
             if observer_to_stop.is_alive():
+                logger.info("Stopping file watcher...")
                 try:
-                    print("DEBUG_ENGINE: Stopping file watcher observer thread...")
                     observer_to_stop.stop()
-                    # observer_to_stop.join(timeout=1) # Shorter timeout for join
-                except Exception as e: # Catch errors during stop (e.g. if thread already stopped)
-                    print(f"Warning_ENGINE: Error during observer.stop(): {e}")
-                
-                try:
-                    # Wait for the thread to terminate with a timeout
-                    # It's crucial that join is called on the thread that is running.
-                    # The observer object itself is not the thread, but manages it.
-                    # Observer.join() is the correct method.
-                    observer_to_stop.join(timeout=2) # Increased timeout slightly
+                    observer_to_stop.join(timeout=5) 
                     if observer_to_stop.is_alive():
-                        print("WARNING_ENGINE: File watcher observer thread did not terminate in time after join.")
+                        logger.warning("File watcher did not terminate in time after stop() and join().")
                     else:
-                        print("DEBUG_ENGINE: File watcher observer thread successfully joined.")
-                except Exception as e: # Catch errors during join (e.g. RuntimeError if trying to join current thread - though unlikely here)
-                    print(f"Warning_ENGINE: Error during observer.join(): {e}")
+                        logger.info("File watcher stopped successfully.")
+                except Exception as e:
+                    logger.error(f"Exception during file watcher stop/join: {e}", exc_info=True)
             else:
-                print("DEBUG_ENGINE: File watcher observer was not alive when stop_file_watcher was called.")
-            
-            self._log_handler = None # Clear handler as well
-            print("File watcher stop sequence complete.")
-        # else:
-            # print("DEBUG_ENGINE: stop_file_watcher called but no observer instance to stop.")
+                logger.debug("File watcher was not alive when stop_file_watcher was called.")
+        else:
+            logger.debug("stop_file_watcher called but no observer instance was present.")
 
     def _write_instruction_file(self, instruction: str):
         if not self.current_project or not self.dev_instructions_dir:
             self._set_state(EngineState.ERROR, "Cannot write instruction: No active project or instructions directory.")
-            return False
+            return
+        if not self.current_project_state:
+             self._set_state(EngineState.ERROR, "Cannot write instruction: No project state available.")
+             return
+
         try:
-            instruction_file_path = os.path.join(self.dev_instructions_dir, "next_step.txt")
-            with open(instruction_file_path, 'w') as f:
-                f.write(instruction)
+            filename = self.config.get_next_step_filename() # e.g., next_step.txt
+            instruction_file_path = os.path.join(self.dev_instructions_dir, filename)
+            self._write_to_file(self.dev_instructions_dir, filename, instruction)
             
-            if self.current_project_state:
-                self.current_project_state.last_instruction_sent = instruction
-                # Add to history: Dev Manager's instruction
-                self._add_to_history("gemini", instruction)
-            print(f"Instruction written to: {instruction_file_path}")
-            return True
-        except IOError as e:
-            self._set_state(EngineState.ERROR, f"Failed to write instruction file: {e}")
-            return False
+            self.current_project_state.last_instruction_sent = instruction
+            # History for Gemini's own instruction is added in _process_gemini_response before this call.
+            logger.info(f"Instruction written to: {instruction_file_path}")
+            self._set_state(EngineState.RUNNING_WAITING_LOG, f"Instruction written. Waiting for Cursor log ('{self.config.get_cursor_output_filename()}').")
+            self._start_cursor_timeout()
+            if not self.file_observer or not self.file_observer.is_alive(): # Start watcher if not already running
+                logger.info("File watcher was not running. Starting it now for RUNNING_WAITING_LOG state.")
+                self._start_file_watcher()
+
+        except (OSError, PersistenceError) as e:
+            logger.error(f"Failed to write instruction file '{filename}' to '{self.dev_instructions_dir}': {e}", exc_info=True)
+            self._set_state(EngineState.ERROR, f"File Write Error: {e}")
+        except AttributeError as ae: # e.g. if self.config is None
+             logger.critical(f"Configuration error while trying to write instruction file: {ae}", exc_info=True)
+             self._set_state(EngineState.ERROR, f"Internal Configuration Error: {ae}")
 
     def _on_log_file_created(self, log_file_path: str):
-        print(f"Log file event: {log_file_path}")
-        # Filter out events for non-target files or subdirectories (like 'processed')
-        if os.path.basename(log_file_path) != "cursor_step_output.txt" or \
-           os.path.dirname(log_file_path) != self.dev_logs_dir : 
-            return
+        logger.debug(f"_on_log_file_created triggered for: {log_file_path}")
+        with self._engine_lock:
+            if self.state != EngineState.RUNNING_WAITING_LOG:
+                logger.warning(f"Log file '{os.path.basename(log_file_path)}' created/detected, but engine not in RUNNING_WAITING_LOG state (current: {self.state.name}). Ignoring.")
+                return
 
-        if self.state != EngineState.RUNNING_WAITING_LOG:
-            print(f"Warning: Log file created while not in RUNNING_WAITING_LOG state (current: {self.state.name}). Ignoring.")
-            # Potentially move unexpected logs to processed or an 'unexpected' folder.
-            return
-        
-        self._set_state(EngineState.RUNNING_PROCESSING_LOG)
-        self.stop_file_watcher() # Stop watcher while processing to avoid duplicate events or race conditions
-
-        try:
-            time.sleep(0.5) # Small delay to ensure file is fully written
-            with open(log_file_path, 'r') as f:
-                log_content = f.read()
+            self._cancel_cursor_timeout()
+            self._set_state(EngineState.RUNNING_PROCESSING_LOG, f"Processing log file: {os.path.basename(log_file_path)}")
             
-            self._add_to_history("cursor", log_content) # Add Cursor's log to history
-            self._process_cursor_log(log_content)
+            try:
+                # Add a small delay to ensure file is fully written and closed by Cursor agent
+                time.sleep(self.config.get_log_file_read_delay_seconds()) 
+                with open(log_file_path, 'r', encoding='utf-8') as f:
+                    log_content = f.read()
+                logger.debug(f"Successfully read log file. Content length: {len(log_content)}")
 
-            # Move processed log file
-            processed_dir = os.path.join(self.dev_logs_dir, "processed")
-            os.makedirs(processed_dir, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            new_log_filename = f"cursor_step_output_{timestamp}.txt"
-            shutil.move(log_file_path, os.path.join(processed_dir, new_log_filename))
-            print(f"Processed log moved to: {os.path.join(processed_dir, new_log_filename)}")
+                # Call _process_cursor_log which will call Gemini and then _process_gemini_response
+                self._process_cursor_log(log_content) 
 
-        except Exception as e:
-            self._set_state(EngineState.ERROR, f"Error processing log file {log_file_path}: {e}")
-            # Consider if we should try to restart watcher or go to a safe state
-            # If the log file caused an error, we might not want to restart the watcher immediately
-            # until the issue is resolved or a timeout occurs.
+                # Move processed log file
+                processed_dir = os.path.join(self.dev_logs_dir, "processed")
+                os.makedirs(processed_dir, exist_ok=True)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                new_log_filename = f"{self.config.get_cursor_output_filename().split('.')[0]}_{timestamp}.txt"
+                try:
+                    shutil.move(log_file_path, os.path.join(processed_dir, new_log_filename))
+                    logger.info(f"Processed log moved to: {os.path.join(processed_dir, new_log_filename)}")
+                except Exception as e_move:
+                    logger.error(f"Failed to move processed log file '{log_file_path}' to '{processed_dir}': {e_move}", exc_info=True)
+                    # Continue processing, moving is not critical for the main loop
+
+            except FileNotFoundError:
+                error_msg = f"Log file not found at path: {log_file_path} (event might be stale or file removed too quickly)"
+                logger.error(error_msg)
+                self._set_state(EngineState.ERROR, f"File Read Error: {error_msg}")
+            except IOError as ioe:
+                error_msg = f"IOError reading log file '{log_file_path}': {ioe}"
+                logger.error(error_msg, exc_info=True)
+                self._set_state(EngineState.ERROR, f"File Read Error: {error_msg}")
+            except Exception as e:
+                error_msg = f"Unexpected error processing log file '{log_file_path}': {e}"
+                logger.critical(error_msg, exc_info=True)
+                self._set_state(EngineState.ERROR, error_msg)
 
     def _process_cursor_log(self, log_content: str):
         if not self.current_project or not self.current_project_state:
-            self._set_state(EngineState.ERROR, "Critical error: No active project or state during log processing.")
+            logger.critical("Cannot process cursor log: No active project or project state.")
+            self._set_state(EngineState.ERROR, "Internal Error: Missing project context for log processing.")
             return
 
-        self._set_state(EngineState.RUNNING_CALLING_GEMINI)
-        self._notify_gui("status_update", "Contacting Dev Manager (Gemini)...")
-
-        response_dict = self.gemini_client.get_next_step_from_gemini(
-            project_goal=self.current_project.overall_goal,
-            current_context_summary=self.current_project_state.context_summary,
-            full_conversation_history=self.current_project_state.conversation_history,
-            max_history_turns=self.config.get_max_history_turns(),
-            max_context_tokens=self.config.get_max_context_tokens(),
-            cursor_log_content=log_content
+        self._add_to_history("cursor_log", log_content, needs_user_input=False)
+        self._set_state(EngineState.RUNNING_CALLING_GEMINI, "Calling Gemini with new log content...")
+        
+        gemini_q: queue.Queue[Dict[str, Any]] = queue.Queue()
+        self._gemini_call_thread = threading.Thread(
+            target=self._call_gemini_in_thread,
+            args=(
+                self.current_project.overall_goal,
+                self.current_project_state.conversation_history,
+                self.current_project_state.current_summary,
+                None, # No initial structure overview for subsequent calls
+                log_content, # Pass the new log content
+                gemini_q
+            ),
+            daemon=True,
+            name="GeminiLogProcessingThread"
         )
-        gemini_status = response_dict.get("status")
-        gemini_content = response_dict.get("content")
+        self._gemini_call_thread.start()
 
-        if gemini_status == "INSTRUCTION":
-            if self._write_instruction_file(gemini_content):
-                self._set_state(EngineState.RUNNING_WAITING_LOG)
-                self._start_file_watcher() # Restart watcher for the next log
+        try:
+            response_data = gemini_q.get(timeout=GEMINI_CALL_TIMEOUT_SECONDS)
+            if response_data.get("error"):
+                error_msg = response_data["error"]
+                logger.error(f"Gemini call (after log) failed: {error_msg}")
+                self._set_state(EngineState.ERROR, f"Gemini Call Error: {error_msg}")
             else:
-                # Error already set by _write_instruction_file
-                pass 
-        elif gemini_status == "NEED_INPUT":
-            self._set_state(EngineState.PAUSED_WAITING_USER_INPUT)
-            self._add_to_history("gemini_clarification_request", gemini_content)
-            self._notify_gui("user_input_needed", gemini_content)
-        elif gemini_status == "COMPLETE":
-            self._set_state(EngineState.TASK_COMPLETE)
-            self._add_to_history("gemini", "Task marked as complete.")
-            self._notify_gui("task_complete", gemini_content)
-        elif gemini_status == "ERROR":
-            self._set_state(EngineState.ERROR, f"Gemini API Error: {gemini_content}")
-            self._add_to_history("system_error", f"Gemini API Error: {gemini_content}")
+                self._process_gemini_response(response_data)
+        except queue.Empty:
+            error_msg = "Gemini call (after log) timed out."
+            logger.error(error_msg)
+            self._set_state(EngineState.ERROR, f"Gemini Timeout: {error_msg}")
+        except Exception as e:
+            error_msg = f"Unexpected error after Gemini call (log processing): {e}"
+            logger.critical(error_msg, exc_info=True)
+            self._set_state(EngineState.ERROR, error_msg)
 
-    def _add_to_history(self, sender: str, message: str):
-        if self.current_project_state:
-            new_turn = Turn(sender=sender, message=message) # Create Turn object
-            # Timestamp is handled by Turn's default factory
-            self.current_project_state.conversation_history.append(new_turn) # Append Turn object
-            # Notify GUI *before* saving state, just in case saving blocks briefly
-            self._notify_gui("new_message", {"sender": new_turn.sender, 
-                                             "message": new_turn.message, 
-                                             "timestamp": new_turn.timestamp})
-            # Save state after adding to history
+    def _add_to_history(self, sender: str, message: str, needs_user_input: bool = False):
+        if not self.current_project_state:
+            logger.error("Cannot add to history, no project state loaded.")
+            return
+
+        turn = Turn(sender=sender, message=message, timestamp=datetime.now().isoformat(), needs_user_input=needs_input)
+        self.current_project_state.conversation_history.append(turn)
+        logger.debug(f"Added to history: Sender={sender}, NeedsInput={needs_input}, Msg='{message[:50]}...'")
+        try:
             if self.current_project:
                  save_project_state(self.current_project, self.current_project_state)
+                 logger.debug(f"Saved project state after adding history for {self.current_project.name}")
+            else:
+                 logger.error("Cannot save history, current_project is None while current_project_state exists.")
+        except PersistenceError as e:
+            logger.error(f"Failed to save project state after adding history: {e}", exc_info=True)
+            self.last_error_message = f"Failed to save project history: {e}"
 
-    # --- Summarization Logic --- #
     def _check_and_run_summarization(self):
-        if not self.current_project or not self.current_project_state or not self.gemini_client:
-            return # Cannot summarize without project/state/client
-            
+        if not self.current_project or not self.current_project_state or not self.gemini_client or not self.config:
+            logger.debug("Skipping summarization check: missing project, state, gemini_client or config.")
+            return
+
         interval = self.config.get_summarization_interval()
         history = self.current_project_state.conversation_history
-        
-        # Trigger summarization if interval is positive and met
-        # Also summarize if context_summary is None but history exists (e.g., first load after crash)
-        should_summarize = (interval > 0 and len(history) > 0 and len(history) % interval == 0) or \
-                           (self.current_project_state.context_summary is None and len(history) > 1) # Summarize if summary missing but history exists
+        token_limit = self.config.get_max_context_tokens() # A general token limit to consider
 
-        if should_summarize:
-            print(f"** Engine: Checking summarization need. History length: {len(history)}, Interval: {interval}. Triggered: {should_summarize} **")
-            # Simple summarization: Join last 'interval' turns (or all if summary was missing)
-            turns_to_summarize_count = interval if (interval > 0 and len(history) % interval == 0) else len(history)
-            start_index = max(0, len(history) - turns_to_summarize_count)
+        # Simplistic trigger: if history is long and summary is old or non-existent
+        # A more robust approach would involve actual token counting of history vs summary.
+        needs_summarization = False
+        if not self.current_project_state.current_summary and len(history) > interval // 2:
+            needs_summarization = True
+            logger.info(f"Triggering summarization: No current summary and history length ({len(history)}) > configured interval/2 ({interval//2}).")
+        elif interval > 0 and len(history) > 0 and len(history) % interval == 0: # ensure interval > 0
+            needs_summarization = True
+            logger.info(f"Triggering summarization: History length ({len(history)}) is a multiple of positive interval ({interval}).")
+        elif self.current_project_state.current_summary and interval > 0 and len(history) > (self.current_project_state.last_summary_turn_count + interval):
+            needs_summarization = True
+            logger.info(f"Triggering summarization: History grew by {interval} turns since last summary (currently {len(history)} turns, last summarized at {self.current_project_state.last_summary_turn_count}).")
+
+        if needs_summarization:
+            logger.info(f"Summarization Check: History length {len(history)}, Interval {interval}. Needs summarization: {needs_summarization}")
             
-            text_parts = []
-            if self.current_project_state.context_summary:
-                 text_parts.append(f"Previous Summary:\n{self.current_project_state.context_summary}\n")
-            text_parts.append("New History Since Last Summary:")
-            for turn in history[start_index:]:
-                 text_parts.append(f"[{turn.sender} @ {turn.timestamp}]: {turn.message}")
+            # Create text from history since last summary
+            turns_to_summarize = []
+            start_index = self.current_project_state.last_summary_turn_count
+            if start_index < 0: start_index = 0 # Should not happen
+
+            for i in range(start_index, len(history)):
+                turns_to_summarize.append(history[i])
             
-            text_to_summarize = "\n".join(text_parts)
+            if not turns_to_summarize:
+                logger.info("No new turns to summarize since last summary point.")
+                self.current_project_state.last_summary_turn_count = len(history) # Update marker
+                save_project_state(self.current_project, self.current_project_state)
+                return
+
+            text_to_summarize_parts = [f"Previous Summary (if any):\n{self.current_project_state.current_summary if self.current_project_state.current_summary else 'None'}",
+                                       f"\n\nNew conversation turns to incorporate into summary (Goal: {self.current_project.overall_goal}):"]
+            for turn in turns_to_summarize:
+                text_to_summarize_parts.append(f"[{turn.sender}]: {turn.message}")
             
-            print(f"** Engine: Attempting to summarize context ({len(text_to_summarize)} chars)... **")
-            # Consider running summarization in a separate thread if it becomes time-consuming
+            full_text_for_gemini = "\n".join(text_to_summarize_parts)
+            logger.debug(f"Text for Gemini summarization (first 200 chars): {full_text_for_gemini[:200]}...")
+
+            # Store current state, call Gemini, then restore state or handle new state from Gemini
+            # This is a simplified approach. A dedicated summarization state might be better.
+            original_state = self.state
+            self._set_state(EngineState.RUNNING_CALLING_GEMINI, "Summarizing conversation context...")
+            logger.info("--- Calling Gemini for summarization... ---")
+            
             try:
-                # Use a reasonable token limit for summary, maybe from config?
-                summary = self.gemini_client.summarize_text(text_to_summarize, max_summary_tokens=500) 
-                if summary:
-                    print("** Engine: Summarization successful. Updating project state. **")
-                    self.current_project_state.context_summary = summary
-                    # We don't add this to the main visible history, it's meta-context
-                    # self._add_to_history("SYSTEM", "Conversation context summarized.") # Avoid cluttering main history
-                    save_project_state(self.current_project, self.current_project_state)
-                else:
-                    print("** Engine Warning: Summarization call returned None or empty string. **")
-            except Exception as e:
-                 print(f"** Engine Error: Summarization failed: {e} **")
+                # Use a method in GeminiCommunicator designed for summarization
+                # q_summary = queue.Queue() # if making it async, but for now let's do it synchronously for simplicity
+                new_summary = self.gemini_client.summarize_conversation_history(
+                    history_turns=turns_to_summarize, # Send only new turns
+                    existing_summary=self.current_project_state.current_summary,
+                    project_goal=self.current_project.overall_goal,
+                    max_tokens=self.config.get_max_summary_tokens() # Specific config for summary length
+                )
 
-    # --- Public Control Methods --- #
+                if new_summary:
+                    self.current_project_state.current_summary = new_summary
+                    self.current_project_state.last_summary_turn_count = len(history) # Mark how many turns are now summarized
+                    self._add_to_history("system", f"Context summarized. New summary (first 100 chars): {new_summary[:100]}...", needs_user_input=False)
+                    logger.info(f"--- Context summarization complete. New summary stored. Last summarized turn index: {self.current_project_state.last_summary_turn_count} ---")
+                else:
+                    logger.warning("Summarization call returned no content. Old summary retained if any.")
+                
+                save_project_state(self.current_project, self.current_project_state)
+            except Exception as e_summary:
+                logger.error(f"Error during Gemini summarization call: {e_summary}", exc_info=True)
+                self._add_to_history("system", f"Error during context summarization: {e_summary}", needs_user_input=False)
+            finally:
+                # Restore original state if summarization didn't change it to ERROR or PAUSED
+                if self.state == EngineState.RUNNING_CALLING_GEMINI: # If it's still in this temp state
+                    self._set_state(original_state, "Summarization attempt finished.")
+        else:
+            logger.debug(f"Summarization not needed. History length: {len(history)}, Summary exists: {bool(self.current_project_state.current_summary)}, Last summarized turns: {self.current_project_state.last_summary_turn_count}")
 
     def start_task(self, initial_user_instruction: Optional[str] = None):
         with self._engine_lock:
-            if hasattr(self, '_last_critical_error') and self._last_critical_error:
+            if self._last_critical_error:
                 self._set_state(EngineState.ERROR, self._last_critical_error)
                 return
-
+                
             if not self.current_project or not self.current_project_state:
-                self._set_state(EngineState.ERROR, "Cannot start task: No project selected or state not loaded.")
+                logger.error("Cannot start task: No active project selected or project state not loaded.")
+                self._set_state(EngineState.ERROR, "No active project selected to start task.")
                 return
-
-            # Check for summarization BEFORE calling Gemini
-            self._check_and_run_summarization() 
-
-            # Determine if this is the first meaningful interaction for the current task/project state
-            is_first_interaction = not self.current_project_state.conversation_history
-            if not is_first_interaction and self.current_project_state.conversation_history[-1].sender == "USER" and self.current_project_state.conversation_history[-1].message == initial_user_instruction:
-                # This handles the case where start_task is called immediately after setting user input that forms part of history
-                # Check if the very last message IS the initial_user_instruction from USER, then it's still effectively a first Gemini call for this.
-                 if len(self.current_project_state.conversation_history) == 1: # Only one user message means Gemini hasn't spoken yet.
-                     is_first_interaction = True
-
-            initial_project_structure_overview_str: Optional[str] = None
-            if is_first_interaction:
-                print(f"DEBUG_ENGINE: First interaction for project '{self.current_project.name}'. Generating structure overview.")
-                try:
-                    workspace_path = self.current_project.workspace_root_path
-                    print(f"DEBUG_ENGINE: Workspace path for structure overview: {workspace_path}")
-                    if os.path.isdir(workspace_path):
-                        entries = os.listdir(workspace_path)
-                        files = [e for e in entries if os.path.isfile(os.path.join(workspace_path, e))][:5] # Limit to 5 files
-                        dirs = [e for e in entries if os.path.isdir(os.path.join(workspace_path, e))][:5]   # Limit to 5 dirs
-                        
-                        structure_parts = []
-                        if files:
-                            structure_parts.append(f"Files: {', '.join(files)}")
-                        if dirs:
-                            structure_parts.append(f"Directories: {', '.join(dirs)}")
-                        
-                        if structure_parts:
-                            initial_project_structure_overview_str = f"Project root (\"{workspace_path}\") top-level structure: {'; '.join(structure_parts)}."
-                        else:
-                            initial_project_structure_overview_str = f"Project root (\"{workspace_path}\") is empty or structure could not be determined."
-                        print(f"DEBUG_ENGINE: Generated structure overview: {initial_project_structure_overview_str}")
-                    else:
-                        print(f"DEBUG_ENGINE: Workspace path {workspace_path} is not a valid directory.")
-                        initial_project_structure_overview_str = f"Project root (\"{workspace_path}\") is not a valid directory."
-
-                except Exception as e:
-                    print(f"ERROR_ENGINE: Failed to generate project structure overview: {e}")
-                    # Optionally, pass this error as part of the overview string or handle differently
-                    initial_project_structure_overview_str = f"Error generating project structure: {e}"
 
             if self.state not in [EngineState.IDLE, EngineState.PROJECT_SELECTED, EngineState.TASK_COMPLETE, EngineState.ERROR]:
                 if self.state == EngineState.PAUSED_WAITING_USER_INPUT and initial_user_instruction:
-                    # This is actually a resume_with_user_input scenario called via start_task logic in GUI
-                    print(f"Engine: Resuming task due to start_task call while PAUSED_WAITING_USER_INPUT with instruction: {initial_user_instruction}")
-                    self.resume_with_user_input(initial_user_instruction)
-                    return 
-                else:
-                    print(f"Engine state is {self.state.name}, cannot start a new task flow now.")
-                    self._notify_gui("status_update", f"Engine is busy ({self.state.name}). Cannot start new task now.")
+                    logger.info(f"Task being resumed via start_task with new instruction while in PAUSED_WAITING_USER_INPUT. User instruction: '{initial_user_instruction}'")
+                    self.resume_with_user_input(initial_user_instruction) # Let resume handle it
                     return
-            
-            self._set_state(EngineState.RUNNING_WAITING_INITIAL_GEMINI, "Preparing initial Gemini call.")
-            
-            if initial_user_instruction:
-                self._add_to_history("USER", initial_user_instruction)
-            elif not self.current_project_state.conversation_history: # First run, no instruction, use goal
-                self._add_to_history("SYSTEM", "Task started based on project goal.")
+                else:
+                    logger.warning(f"Engine is busy (state: {self.state.name}). Please stop the current task or wait before starting a new one.")
+                    # self.last_error_message = f"Engine busy ({self.state.name}). Stop task first." # Let main.py show status
+                    return
 
-            # Prepare for Gemini call
-            current_summary = self.current_project_state.context_summary
-            full_history = self.current_project_state.conversation_history
-            goal = self.current_project.overall_goal
+            if self.state == EngineState.ERROR:
+                logger.info("Attempting to start new task from an ERROR state. Clearing previous error.")
+                self.last_error_message = None 
+                self.pending_user_question = None 
 
-            # Asynchronous Gemini Call
-            if self._gemini_call_thread and self._gemini_call_thread.is_alive():
-                self._set_state(EngineState.ERROR, "Gemini call already in progress. New task aborted.")
+            current_goal = initial_user_instruction if initial_user_instruction else self.current_project.overall_goal
+            if not current_goal:
+                logger.error("Cannot start task: No initial instruction and no overall project goal available.")
+                self._set_state(EngineState.ERROR, "Cannot start task: No goal provided.")
                 return
 
-            # Threading setup for Gemini call
-            result_queue = queue.Queue()
+            self.current_project_state.current_task_goal = current_goal
+            if initial_user_instruction:
+                logger.info(f"Starting new task for project '{self.current_project.name}' with initial instruction. Clearing previous conversation history for this task segment.")
+                self.current_project_state.conversation_history = [] 
+                self.current_project_state.current_summary = "" 
+                self.current_project_state.last_summary_turn_count = 0
+            else:
+                logger.info(f"Starting task for project '{self.current_project.name}' based on overall project goal. History NOT cleared.")
+
+            self._add_to_history("user", current_goal, needs_user_input=False)
+            self._set_state(EngineState.RUNNING_WAITING_INITIAL_GEMINI, f"Starting task: {current_goal[:100]}...")
+            
+            self._check_and_run_summarization() # Summarize if needed before first Gemini call
+
+            logger.info(f"Calling Gemini with initial instruction for task: '{current_goal[:100]}...'")
+            initial_structure_overview = self._get_initial_project_structure_overview()
+
+            gemini_q: queue.Queue[Dict[str, Any]] = queue.Queue()
             self._gemini_call_thread = threading.Thread(
                 target=self._call_gemini_in_thread,
-                args=(goal, full_history, current_summary, initial_project_structure_overview_str, None, result_queue) # Pass structure overview
+                args=(
+                    self.current_project.overall_goal,
+                    self.current_project_state.conversation_history,
+                    self.current_project_state.current_summary,
+                    initial_structure_overview, 
+                    None, # No cursor log content for the very first call
+                    gemini_q
+                ),
+                daemon=True,
+                name="GeminiInitialCallThread"
             )
             self._gemini_call_thread.start()
 
-            # Non-blocking wait for result (or handle via callback if GUI exists)
-            # For now, let's assume direct processing or a more complex async handler would be here.
-            # This example will be simplified for direct testability.
-            # The actual Gemini result processing and state transition will happen in _process_gemini_response.
-            print("DEBUG_ENGINE: Thread for _call_gemini_in_thread started. Waiting for queue...")
             try:
-                gemini_response_data = result_queue.get(timeout=GEMINI_CALL_TIMEOUT_SECONDS)
-                print(f"DEBUG_ENGINE: Gemini response received from queue: {gemini_response_data}") # Print response for testing
-                self._process_gemini_response(gemini_response_data)
+                response_data = gemini_q.get(timeout=GEMINI_CALL_TIMEOUT_SECONDS) 
+                if response_data.get("error"):
+                    error_msg = response_data["error"]
+                    logger.error(f"Gemini call (initial) failed: {error_msg}")
+                    self._set_state(EngineState.ERROR, f"Gemini Call Error: {error_msg}")
+                else:
+                    self._process_gemini_response(response_data)
             except queue.Empty:
-                self._set_state(EngineState.ERROR, "Gemini call timed out.")
-                print("ERROR_ENGINE: Gemini call timed out waiting for response from queue.")
+                error_msg = "Gemini call (initial) timed out."
+                logger.error(error_msg)
+                self._set_state(EngineState.ERROR, f"Gemini Timeout: {error_msg}")
             except Exception as e:
-                self._set_state(EngineState.ERROR, f"Error processing Gemini response from queue: {e}")
-                print(f"ERROR_ENGINE: Exception processing Gemini response: {traceback.format_exc()}")
+                error_msg = f"An unexpected error occurred after initial Gemini call: {e}"
+                logger.critical(error_msg, exc_info=True)
+                self._set_state(EngineState.ERROR, error_msg)
+
+    def _get_initial_project_structure_overview(self) -> Optional[str]:
+        if not self.current_project or not self.config:
+            return None
+        try:
+            max_files = self.config.get_structure_max_files()
+            max_dirs = self.config.get_structure_max_dirs()
+            excluded_patterns = self.config.get_structure_excluded_patterns()
+            
+            workspace_path = self.current_project.workspace_root_path
+            logger.debug(f"Generating initial structure overview for path: {workspace_path}")
+            if not os.path.isdir(workspace_path):
+                logger.warning(f"Workspace path '{workspace_path}' is not a valid directory for structure overview.")
+                return f"[System Note: Workspace path '{workspace_path}' is not a directory.]"
+
+            entries = os.listdir(workspace_path)
+            files = []
+            dirs = []
+            
+            def is_excluded(name, patterns):
+                for pattern in patterns:
+                    if (pattern.startswith("*") and name.endswith(pattern[1:])) or \
+                       (pattern.endswith("*") and name.startswith(pattern[:-1])) or \
+                       (pattern.startswith("*") and pattern.endswith("*") and pattern[1:-1] in name) or \
+                       (name == pattern):
+                        return True
+                return False
+
+            for entry_name in entries:
+                if is_excluded(entry_name, excluded_patterns):
+                    logger.debug(f"Excluding '{entry_name}' from structure overview due to exclude patterns.")
+                    continue
+                entry_path = os.path.join(workspace_path, entry_name)
+                if os.path.isfile(entry_path) and len(files) < max_files:
+                    files.append(entry_name)
+                elif os.path.isdir(entry_path) and len(dirs) < max_dirs:
+                    dirs.append(entry_name)
+            
+            structure_parts = []
+            if files:
+                structure_parts.append(f"Top-level files: {files}")
+            if dirs:
+                structure_parts.append(f"Top-level directories: {dirs}")
+            
+            if structure_parts:
+                overview = f"Initial project structure overview (max {max_files} files, {max_dirs} dirs, excluding {excluded_patterns}): {repr(structure_parts)}."
+                logger.debug(f"Generated structure overview: {overview}")
+                return overview
+            else:
+                return f"[System Note: Project root '{workspace_path}' appears empty or all items excluded ({excluded_patterns}).]"
+
+        except Exception as e:
+            logger.error(f"Failed to generate project structure overview: {e}", exc_info=True)
+            return f"[System Note: Error generating project structure overview: {e}]"
 
     def _call_gemini_in_thread(self, project_goal, full_history, current_summary, initial_structure_overview, cursor_log_content, q):
-        # This method runs in a separate thread
-        self._set_state(EngineState.RUNNING_CALLING_GEMINI, "Contacting Gemini...")
+        logger.debug(f"_call_gemini_in_thread: Goal='{project_goal[:50]}...', History turns={len(full_history)}, Summary='{str(current_summary)[:50]}...', Overview provided={bool(initial_structure_overview)}, Log provided={bool(cursor_log_content)}")
         try:
-            max_hist = self.config.get_max_history_turns()
-            max_tokens = self.config.get_max_context_tokens()
-            response = self.gemini_client.get_next_step_from_gemini(
-                project_goal=project_goal,
-                full_conversation_history=full_history,
-                current_context_summary=current_summary,
-                max_history_turns=max_hist,
-                max_context_tokens=max_tokens,
-                cursor_log_content=cursor_log_content,
-                initial_project_structure_overview=initial_structure_overview # Pass here
+            if not self.gemini_client or not self.config:
+                 logger.critical("Gemini client or config not available in _call_gemini_in_thread")
+                 q.put({"error": "Internal: Gemini client or config not initialized"})
+                 return
+
+            response_data = self.gemini_client.generate_step_instruction_with_sop(
+                goal=project_goal,
+                history=full_history,
+                file_contents=None, # TODO: Integrate file contents as context if needed
+                cursor_context=cursor_log_content,
+                initial_overview=initial_structure_overview,
+                current_summary=current_summary
             )
-            q.put(response)
+            q.put(response_data)
+            logger.debug(f"Gemini response obtained in thread: Status='{response_data.get('status')}', NextStep='{response_data.get('next_step_action')}'")
         except Exception as e:
-            print(f"ERROR_ENGINE: Exception in _call_gemini_in_thread: {traceback.format_exc()}")
-            q.put({"status": "ERROR", "content": f"Exception during Gemini call: {e}"})
+            logger.error(f"Exception in _call_gemini_in_thread: {e}", exc_info=True)
+            q.put({"error": f"Exception during Gemini call: {e}"}) # Put error message in queue
 
     def _process_gemini_response(self, response_data: Dict[str, Any]):
-        if not self.current_project or not self.current_project_state:
-            self._set_state(EngineState.ERROR, "Critical error: No active project or state during Gemini response processing.")
-            return
+        with self._engine_lock:
+            if self._shutdown_complete or self.state not in [EngineState.RUNNING_CALLING_GEMINI, EngineState.RUNNING_WAITING_INITIAL_GEMINI]:
+                logger.warning(f"Engine was stopped, shut down, or in an unexpected state ({self.state.name}) while Gemini response was being processed. Ignoring response: {str(response_data)[:100]}...")
+                return
 
-        gemini_status = response_data.get("status")
-        gemini_content = response_data.get("content")
+            instruction = response_data.get("instruction")
+            next_step = response_data.get("next_step_action") 
+            gemini_message_for_history = response_data.get("full_response_for_history")
+            if not gemini_message_for_history: # Fallback for older response formats or if missing
+                gemini_message_for_history = instruction if instruction else response_data.get("clarification_question", "No specific message from Gemini.")
 
-        if gemini_status == "INSTRUCTION":
-            if self._write_instruction_file(gemini_content):
-                self._set_state(EngineState.RUNNING_WAITING_LOG)
-                self._start_file_watcher()
+            logger.info(f"Processing Gemini response. Next step action: '{next_step}'. Instruction provided: {bool(instruction)}")
+            logger.debug(f"Full Gemini response for history: {gemini_message_for_history[:200]}...")
+
+            if next_step == "REQUEST_USER_INPUT":
+                question = response_data.get("clarification_question", "Gemini needs more information. Please provide input.")
+                self._add_to_history("assistant", gemini_message_for_history, needs_user_input=True)
+                self._set_state(EngineState.PAUSED_WAITING_USER_INPUT, question)
+            elif next_step == "TASK_COMPLETE":
+                completion_message = response_data.get("completion_message", "Task marked as complete by Gemini.")
+                self._add_to_history("assistant", gemini_message_for_history, needs_user_input=False)
+                self._set_state(EngineState.TASK_COMPLETE, completion_message)
+                self.stop_file_watcher() 
+            elif next_step == "WRITE_TO_FILE" and instruction:
+                self._add_to_history("assistant", gemini_message_for_history, needs_user_input=False)
+                logger.info(f"Gemini provided instruction. Writing to file... Instruction (first 100 chars): {instruction[:100]}...")
+                self._write_instruction_file(instruction)
             else:
-                # Error already set by _write_instruction_file
-                pass 
-        elif gemini_status == "NEED_INPUT":
-            self._set_state(EngineState.PAUSED_WAITING_USER_INPUT)
-            self._add_to_history("gemini_clarification_request", gemini_content)
-            self._notify_gui("user_input_needed", gemini_content)
-        elif gemini_status == "COMPLETE":
-            self._set_state(EngineState.TASK_COMPLETE)
-            self._add_to_history("gemini", "Task marked as complete.")
-            self._notify_gui("task_complete", gemini_content)
-        elif gemini_status == "ERROR":
-            self._set_state(EngineState.ERROR, f"Gemini API Error: {gemini_content}")
-            self._add_to_history("system_error", f"Gemini API Error: {gemini_content}")
-
+                error_msg_detail = response_data.get('error', 'No actionable step or instruction provided by Gemini.')
+                error_msg = f"Gemini response was unclear or an error: {error_msg_detail}"
+                logger.error(error_msg)
+                self._add_to_history("system", f"Error processing Gemini response: {error_msg}", needs_user_input=False)
+                self._set_state(EngineState.ERROR, error_msg)
+    
     def resume_with_user_input(self, user_response: str):
         with self._engine_lock:
-            if not self.current_project or not self.current_project_state:
-                self._set_state(EngineState.ERROR, "Cannot resume: No project selected or state not loaded.")
-                return
-
             if self.state != EngineState.PAUSED_WAITING_USER_INPUT:
-                self._set_state(EngineState.ERROR, f"Cannot resume: Engine not in PAUSED_WAITING_USER_INPUT state (is {self.state.name}).")
+                logger.warning(f"Cannot resume: Engine not in PAUSED_WAITING_USER_INPUT state (current: {self.state.name}). Input ignored: '{user_response}'")
                 return
+
+            if not self.current_project or not self.current_project_state:
+                logger.error("Cannot resume: No active project or project state.")
+                self._set_state(EngineState.ERROR, "Cannot resume: No active project.")
+                return
+
+            logger.info(f"Resuming with user input: '{user_response}'. Calling Gemini...")
+            self._add_to_history("user", user_response, needs_user_input=False)
+            self.pending_user_question = None # Clear the pending question
+            self._set_state(EngineState.RUNNING_CALLING_GEMINI, "Resuming task with user input...")
             
-            self._add_to_history("USER", user_response)
+            self._check_and_run_summarization() # Summarize if needed before calling Gemini
 
-            # Check for summarization BEFORE calling Gemini
-            self._check_and_run_summarization() 
-
-            # Prepare for Gemini call
-            current_summary = self.current_project_state.context_summary
-            full_history = self.current_project_state.conversation_history
-            goal = self.current_project.overall_goal
-
-            if self._gemini_call_thread and self._gemini_call_thread.is_alive():
-                self._set_state(EngineState.ERROR, "Gemini call already in progress during resume. Aborted.")
-                return
-
-            result_queue = queue.Queue()
+            gemini_q: queue.Queue[Dict[str, Any]] = queue.Queue()
             self._gemini_call_thread = threading.Thread(
                 target=self._call_gemini_in_thread,
-                # NOTE: Resume doesn't have 'initial_structure_overview' conceptually.
-                # It also doesn't typically use 'cursor_log_content' directly, that's processed *before* resume.
-                args=(goal, full_history, current_summary, None, None, result_queue) 
+                args=(
+                    self.current_project.overall_goal,
+                    self.current_project_state.conversation_history,
+                    self.current_project_state.current_summary,
+                    None, # No initial structure overview for resume
+                    None, # No new cursor log at this point
+                    gemini_q
+                ),
+                daemon=True,
+                name="GeminiResumeThread"
             )
             self._gemini_call_thread.start()
 
-            print("DEBUG_ENGINE: Thread for _call_gemini_in_thread started from resume. Waiting for queue...")
             try:
-                gemini_response_data = result_queue.get(timeout=GEMINI_CALL_TIMEOUT_SECONDS)
-                print(f"DEBUG_ENGINE: Gemini response received from resume queue: {gemini_response_data}")
-                self._process_gemini_response(gemini_response_data)
+                response_data = gemini_q.get(timeout=GEMINI_CALL_TIMEOUT_SECONDS)
+                if response_data.get("error"):
+                    error_msg = response_data["error"]
+                    logger.error(f"Gemini call (after user input) failed: {error_msg}")
+                    self._set_state(EngineState.ERROR, f"Gemini Call Error: {error_msg}")
+                else:
+                    self._process_gemini_response(response_data)
             except queue.Empty:
-                self._set_state(EngineState.ERROR, "Gemini call timed out during resume.")
-                print("ERROR_ENGINE: Gemini call timed out waiting for response from resume queue.")
+                error_msg = "Gemini call (after user input) timed out."
+                logger.error(error_msg)
+                self._set_state(EngineState.ERROR, f"Gemini Timeout: {error_msg}")
             except Exception as e:
-                self._set_state(EngineState.ERROR, f"Error processing Gemini response from resume queue: {e}")
-                print(f"ERROR_ENGINE: Exception processing Gemini response from resume: {traceback.format_exc()}")
+                error_msg = f"Unexpected error after Gemini call (resume): {e}"
+                logger.critical(error_msg, exc_info=True)
+                self._set_state(EngineState.ERROR, error_msg)
 
-    def pause_task(self):
-        # This is a soft pause; if RUNNING_WAITING_LOG, it will continue until log is processed or explicitly stopped.
-        # True pause might involve ignoring file events or stopping the watcher and then restarting carefully.
-        # For now, this is more like a user request to pause, which primarily prevents new actions if IDLE/PAUSED.
-        if self.state == EngineState.RUNNING_WAITING_LOG or self.state == EngineState.RUNNING_CALLING_GEMINI or self.state == EngineState.RUNNING_PROCESSING_LOG:
-            # A more robust pause might need to interrupt ongoing Gemini calls or ignore incoming file events.
-            # For now, we allow the current cycle (Gemini call or log processing) to complete and then go to a paused-like state.
-            # This is a simplification. True interruptible pause is harder.
-            # A simple approach: if watcher active, stop it. Change state. When resuming, decide if to re-issue last instruction or call Gemini.
+    def stop_current_task_gracefully(self):
+        with self._engine_lock:
+            if not self.current_project or not self.current_project_state:
+                logger.info("No active project or task to stop.")
+                # Set to IDLE if no project, or PROJECT_SELECTED if project exists but no task was active.
+                self._set_state(EngineState.IDLE if not self.current_project else EngineState.PROJECT_SELECTED, "Stop command received with no active task.")
+                return
+
+            logger.info(f"Attempting to gracefully stop task for project: {self.current_project.name} from state {self.state.name}")
+
+            if self._cursor_timeout_timer and self._cursor_timeout_timer.is_alive():
+                self._cancel_cursor_timeout()
+
             self.stop_file_watcher()
-            self._set_state(EngineState.IDLE) # Or a new PAUSED_BY_USER state
-            self._add_to_history("system", "Task processing paused by user.")
-            self._notify_gui("status_update", "Task paused. File watching stopped.")
-            print("Task paused by user. File watcher stopped.")
-        elif self.state == EngineState.PAUSED_WAITING_USER_INPUT:
-            self._notify_gui("status_update", "Already paused waiting for user input.")
-        else:
-            self._set_state(EngineState.IDLE) # Go to IDLE if not in an active processing state
-            self._notify_gui("status_update", "Task paused/stopped.")
 
-    def stop_task(self): # More of a reset for the current project's task
-        print(f"DEBUG_ENGINE: stop_task invoked from state: {self.state.name}") # Added debug print
-        traceback.print_stack() # Added stack trace
-        self.stop_file_watcher()
-        old_state_name = self.state.name
-        self._set_state(EngineState.PROJECT_SELECTED) # Or IDLE, depending on desired UX
-        self._add_to_history("system", f"Task stopped by user from state: {old_state_name}.")
-        self._notify_gui("status_update", "Task stopped and reset for current project.")
-        if self.current_project and self.current_project_state:
-            self.current_project_state.last_instruction_sent = None
-            # Optionally clear some parts of history or just keep it for context
-            save_project_state(self.current_project, self.current_project_state)
-        print("Task stopped by user.")
+            if self._gemini_call_thread and self._gemini_call_thread.is_alive():
+                logger.warning("A Gemini call is in progress. It will be allowed to complete, but its results should be ignored by _process_gemini_response due to state change.")
+                # The _process_gemini_response method checks self._shutdown_complete and state.
 
-    def _start_cursor_timeout(self): # Added
-        self._cancel_cursor_timeout() # Cancel any existing timer first
-        print(f"DEBUG_ENGINE: Starting cursor log timeout ({CURSOR_LOG_TIMEOUT_SECONDS}s)...")
-        self._cursor_timeout_timer = threading.Timer(
-            CURSOR_LOG_TIMEOUT_SECONDS,
-            self._handle_cursor_timeout
-        )
-        self._cursor_timeout_timer.daemon = True # Allow program to exit even if timer is pending
-        self._cursor_timeout_timer.start()
+            self.current_project_state.current_task_goal = None 
+            self._add_to_history("system", f"Task stopped by user from state {self.state.name}.", needs_user_input=False)
+            self._set_state(EngineState.PROJECT_SELECTED, "Task stopped by user.") 
+            logger.info(f"Task stopped for {self.current_project.name}. Engine is now in {self.state.name} state.")
+
+    def _start_cursor_timeout(self):
+        with self._engine_lock:
+            self._cancel_cursor_timeout() 
+            if self.state == EngineState.RUNNING_WAITING_LOG: 
+                timeout_seconds = self.config.get_cursor_log_timeout_seconds()
+                self._cursor_timeout_timer = threading.Timer(timeout_seconds, self._handle_cursor_timeout)
+                self._cursor_timeout_timer.daemon = True
+                self._cursor_timeout_timer.start()
+                logger.info(f"Cursor log timeout started ({timeout_seconds}s).")
+            else:
+                logger.debug(f"Cursor timeout not started. Engine state is {self.state.name}, not RUNNING_WAITING_LOG.")
 
     def _cancel_cursor_timeout(self):
-        if self._cursor_timeout_timer:
-            print("DEBUG_ENGINE: Cancelling cursor log timeout timer.")
-            self._cursor_timeout_timer.cancel()
+        with self._engine_lock:
+            if self._cursor_timeout_timer and self._cursor_timeout_timer.is_alive():
+                self._cursor_timeout_timer.cancel()
+                logger.info("Cursor log timeout cancelled.")
             self._cursor_timeout_timer = None
-        # print("DEBUG_ENGINE: _cancel_cursor_timeout() called.") # Original placeholder message
-        # pass # Original placeholder
 
-    def _handle_cursor_timeout(self): # Added
+    def _handle_cursor_timeout(self):
         with self._engine_lock:
             if self.state == EngineState.RUNNING_WAITING_LOG:
-                print("ERROR: Cursor log timeout occurred!")
-                self.stop_file_watcher() # Stop watcher if timeout occurs
-                self._set_state(EngineState.ERROR, f"Timeout: Cursor log file did not appear within {CURSOR_LOG_TIMEOUT_SECONDS} seconds.")
-                # Notify GUI about the timeout specifically?
-                # self._notify_gui("cursor_timeout", None)
+                error_msg = f"Cursor log timeout: No log file ('{self.config.get_cursor_output_filename()}') received from Cursor agent within {self.config.get_cursor_log_timeout_seconds()} seconds."
+                logger.error(error_msg)
+                self._add_to_history("system", error_msg, needs_user_input=False)
+                
+                # Stop watcher, it failed to see the file.
+                self.stop_file_watcher()
+
+                logger.info("Cursor log timed out. Asking Gemini for next step...")
+                self._set_state(EngineState.RUNNING_CALLING_GEMINI, "Cursor log timed out. Asking Gemini for next step...")
+
+                if not self.current_project or not self.current_project_state: # Should not happen here
+                    logger.critical("Critical: No project/state during cursor timeout handling.")
+                    self._set_state(EngineState.ERROR, "Internal error during cursor timeout handling.")
+                    return
+
+                gemini_q: queue.Queue[Dict[str, Any]] = queue.Queue()
+                self._gemini_call_thread = threading.Thread(
+                    target=self._call_gemini_in_thread,
+                    args=(
+                        self.current_project.overall_goal,
+                        self.current_project_state.conversation_history, 
+                        self.current_project_state.current_summary,
+                        f"Context: Cursor agent did not produce a log file ('{self.config.get_cursor_output_filename()}') in the expected time. What should be the next step? Consider if retrying, stopping, or asking user is appropriate.",
+                        None, # No new cursor log content
+                        gemini_q
+                    ),
+                    daemon=True,
+                    name="GeminiCursorTimeoutHandlerThread"
+                )
+                self._gemini_call_thread.start()
+
+                try:
+                    response_data = gemini_q.get(timeout=GEMINI_CALL_TIMEOUT_SECONDS)
+                    if response_data.get("error"):
+                        err = response_data["error"]
+                        logger.error(f"Gemini call (after cursor timeout) failed: {err}")
+                        self._set_state(EngineState.ERROR, f"Gemini Call Error (after timeout): {err}")
+                    else:
+                        self._process_gemini_response(response_data)
+                except queue.Empty:
+                    err = "Gemini call (after cursor timeout) timed out itself."
+                    logger.error(err)
+                    self._set_state(EngineState.ERROR, f"Gemini Timeout (after cursor timeout): {err}")
+                except Exception as e:
+                    err = f"Unexpected error after Gemini call (cursor timeout): {e}"
+                    logger.critical(err, exc_info=True)
+                    self._set_state(EngineState.ERROR, err)
             else:
-                # Timer fired, but we are no longer waiting for the log (e.g., task stopped, log arrived)
-                print(f"DEBUG_ENGINE: Cursor timeout timer fired, but state is {self.state.name}. No action needed.")
-            self._cursor_timeout_timer = None # Timer has done its job
+                logger.info(f"Cursor timeout handler triggered, but state is {self.state.name} (not RUNNING_WAITING_LOG). No action taken.")
+            self._cursor_timeout_timer = None
 
     def shutdown(self):
-        print("Orchestration Engine shutting down...")
-        self.stop_file_watcher()
-        # Any other cleanup
-        print("Orchestration Engine shutdown complete.")
+        logger.info("OrchestrationEngine shutdown sequence initiated...")
+        with self._engine_lock:
+            if self._shutdown_complete:
+                logger.info("Engine shutdown already completed or in progress.")
+                return
+            self._shutdown_complete = True # Mark immediately to prevent re-entry
+            
+            current_state_before_shutdown = self.state.name
+            logger.info(f"Engine state before shutdown: {current_state_before_shutdown}")
+
+            logger.info("Cancelling any pending cursor timeout...")
+            self._cancel_cursor_timeout()
+
+            logger.info("Stopping file watcher if active...")
+            self.stop_file_watcher()
+
+            # Thread joining for Gemini thread is tricky. Daemon threads should exit.
+            # We set _shutdown_complete, and _process_gemini_response checks this.
+            if self._gemini_call_thread and self._gemini_call_thread.is_alive():
+                logger.info(f"Gemini call thread '{self._gemini_call_thread.name}' is alive. It will be allowed to complete as a daemon thread or its results ignored.")
+                # No join here to prevent blocking shutdown, rely on daemon and _shutdown_complete flag.
+
+            if self.current_project and self.current_project_state:
+                logger.info(f"Saving final state for project: {self.current_project.name} with status {self.state.name}")
+                try:
+                    # Explicitly set current_status to a more stable state if it was running
+                    if self.state.name.startswith("RUNNING_"):
+                        logger.warning(f"Engine was in a RUNNING state ({self.state.name}) during shutdown. Saving project state as PROJECT_SELECTED.")
+                        self.current_project_state.current_status = EngineState.PROJECT_SELECTED.name
+                    elif self.state == EngineState.PAUSED_WAITING_USER_INPUT:
+                         logger.info("Engine was PAUSED_WAITING_USER_INPUT during shutdown. Preserving this state for project.")
+                         self.current_project_state.current_status = EngineState.PAUSED_WAITING_USER_INPUT.name
+                    else:
+                        self.current_project_state.current_status = self.state.name # Persist the actual final state (IDLE, ERROR, TASK_COMPLETE, etc)
+                    save_project_state(self.current_project, self.current_project_state)
+                except PersistenceError as e:
+                    logger.error(f"Error saving project state for {self.current_project.name} during shutdown: {e}", exc_info=True)
+            
+            self.state = EngineState.IDLE # Final engine state after shutdown process
+            logger.info(f"OrchestrationEngine shutdown complete. Final engine state: {self.state.name}.")
 
     def get_project_path(self):
-        return self.current_project.path if self.current_project else None
+        # This method seems unused and current_project might not have a direct 'path' attribute.
+        # It likely intended to return current_project.workspace_root_path
+        if self.current_project:
+            return self.current_project.workspace_root_path
+        return None
 
-    def get_current_state(self):
-        return self.state
+    def get_current_engine_state_name(self): # Renamed for clarity
+        return self.state.name
 
-# --- FileSystemEventHandler for Watchdog --- #
-if FileSystemEventHandler: # Only define if watchdog is available
-    class LogFileCreatedHandler(FileSystemEventHandler):
-        def __init__(self, engine: 'OrchestrationEngine'):
-            self.engine = engine
+    def _get_timestamp(self) -> str:
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        def on_created(self, event):
-            if not event.is_directory and os.path.basename(event.src_path) == "cursor_step_output.txt":
-                # Check if the event is for the expected log file in the active project's dev_logs directory
-                if self.engine.current_project and self.engine.current_project_state:
-                    expected_dir = os.path.join(self.engine.current_project.workspace_root_path, self.engine.config.get_default_dev_logs_dir())
-                    if os.path.dirname(event.src_path) == expected_dir:
-                        print(f"Engine Watcher: Detected log file: {event.src_path}")
-                        self.engine._cancel_cursor_timeout()
-                        time.sleep(0.5) 
-                        self.engine._on_log_file_created(event.src_path)
-                    else:
-                        print(f"Engine Watcher: Ignored log file in unexpected directory: {event.src_path}")
-                else:
-                    print(f"Engine Watcher: Ignored log file, no active project: {event.src_path}")
-            # else:
-                # print(f"Engine Watcher: Ignored event: {event.src_path} (is_directory: {event.is_directory}, name: {os.path.basename(event.src_path)})")
-else:
-    LogFileCreatedHandler = None # Placeholder if watchdog not imported
+    def _write_to_file(self, directory: str, filename: str, content: str):
+        if not self.current_project:
+            logger.error("Cannot write to file: No current project selected.")
+            raise PersistenceError("Cannot write to file: No current project selected.")
+        
+        abs_project_path = os.path.abspath(self.current_project.workspace_root_path)
+        abs_directory_path = os.path.abspath(directory)
 
-# Example Usage (illustrative, assumes GUI/callbacks are handled elsewhere)
-if __name__ == '__main__':
-    print("Starting OrchestrationEngine example...")
-    # Dummy callback for testing
-    def dummy_gui_callback(msg_type, data):
-        print(f"GUI Callback: {msg_type} - {data}")
+        # Safety check: ensure writing within the project's workspace_root_path
+        # This check might need to be more robust depending on how `directory` is constructed
+        if not abs_directory_path.startswith(abs_project_path) and abs_directory_path != abs_project_path:
+             # Allow if abs_directory_path is a sub-path of abs_project_path
+            is_safe_subpath = False
+            try:
+                common_path = os.path.commonpath([abs_project_path, abs_directory_path])
+                if common_path == abs_project_path:
+                    is_safe_subpath = True
+            except ValueError: # Paths on different drives (Windows)
+                pass 
+            if not is_safe_subpath:
+                logger.error(f"Security Error: Attempt to write outside of project workspace. Project: '{abs_project_path}', Target Dir: '{abs_directory_path}'")
+                raise PersistenceError(f"Security Error: Attempt to write to '{abs_directory_path}' which is outside project workspace '{abs_project_path}'.")
 
-    engine = OrchestrationEngine(gui_update_callback=dummy_gui_callback)
+        if not os.path.exists(abs_directory_path):
+            try:
+                os.makedirs(abs_directory_path, exist_ok=True)
+                logger.debug(f"Created directory for write: {abs_directory_path}")
+            except OSError as e:
+                logger.error(f"Failed to create directory {abs_directory_path} for writing: {e}", exc_info=True)
+                raise PersistenceError(f"Failed to create directory {abs_directory_path}: {e}")
 
-    # 1. Create a dummy project for testing (persistence would normally handle this)
-    mock_project_dir = "./mock_orchestrator_workspace"
-    if not os.path.exists(mock_project_dir):
-        os.makedirs(mock_project_dir)
-    
-    from .persistence import add_project # Use the actual add_project
-    # Clear old test projects if any
-    if os.path.exists("app_data/projects.json"):
-        with open("app_data/projects.json", "w") as f: json.dump([],f)
-
-    test_project = add_project(
-        name="EngineTestProject", 
-        workspace_root_path=mock_project_dir, 
-        overall_goal="Test the orchestration engine components."
-    )
-
-    if not test_project:
-        print("Failed to create test project for engine example. Exiting.")
-        exit()
-
-    print(f"Test project created: {test_project.name}")
-
-    # 2. Set active project
-    if engine.set_active_project(test_project):
-        print(f"Successfully set active project: {engine.current_project.name}")
-        print(f"Initial engine state: {engine.state.name}")
-
-        # 3. Simulate starting a task
-        engine.start_task("Please write a Python script that prints numbers 1 to 5.")
-        print(f"Engine state after start_task: {engine.state.name}")
-
-        # 4. Manually simulate Cursor creating the log file (since watcher runs in a thread)
-        # In a real scenario, the watcher would pick this up.
-        if engine.state == EngineState.RUNNING_WAITING_LOG:
-            print("Engine is waiting for log. Simulating log creation...")
-            time.sleep(2) # Give time for watcher to start if it were real
-            log_file = os.path.join(engine.dev_logs_dir, "cursor_step_output.txt")
-            with open(log_file, "w") as f:
-                f.write("SUCCESS: Created script numbers.py. It prints numbers 1 to 5.")
-            print(f"Simulated log file created: {log_file}")
-            
-            # Manually trigger the handler for this example if watcher is not running or for direct test
-            if LogFileCreatedHandler: # Check if class is defined
-                engine._process_cursor_log(log_file) # Manually call for testing flow
-            else:
-                print("Watchdog not available, manual trigger of _process_cursor_log needed for full test.")
-
-            # Wait for Gemini call and next instruction (simulated)
-            time.sleep(5) # Simulate Gemini processing time
-            print(f"Engine state after simulated log processing: {engine.state.name}")
-            if engine.current_project_state and engine.current_project_state.last_instruction_sent:
-                print(f"Next instruction from Gemini (simulated): {engine.current_project_state.last_instruction_sent}")
-            
-            # Simulate another log if needed
-            if engine.state == EngineState.RUNNING_WAITING_LOG and engine.current_project_state.last_instruction_sent != "Task marked as complete.":
-                print("Simulating second log file for TASK_COMPLETE...")
-                second_log_file = os.path.join(engine.dev_logs_dir, "cursor_step_output.txt")
-                with open(second_log_file, "w") as f:
-                    f.write("SUCCESS: Task fully completed as per instructions.")
-                if LogFileCreatedHandler:
-                    engine._process_cursor_log(second_log_file)
-                time.sleep(5)
-                print(f"Engine state after second log: {engine.state.name}")
+        file_path = os.path.join(abs_directory_path, filename)
+        try:
+            with open(file_path, "w", encoding='utf-8') as f:
+                f.write(content)
+            logger.info(f"File written successfully: {file_path}")
+        except IOError as e:
+            logger.error(f"Failed to write to file {file_path}: {e}", exc_info=True)
+            raise PersistenceError(f"Failed to write to file {file_path}: {e}")
 
 
+class LogFileCreatedHandler(FileSystemEventHandler): # type: ignore
+    def __init__(self, engine: 'OrchestrationEngine'):
+        super().__init__()
+        self.engine = engine
+        self.last_event_time: Dict[str, float] = {}
+        self.debounce_seconds = 2.0 # Configurable debounce window
+        if not self.engine.config:
+            logger.error("LogFileCreatedHandler initialized without engine.config! Using default debounce.")
         else:
-            print(f"Engine not in RUNNING_WAITING_LOG state after start_task. Current state: {engine.state.name}. Error: {engine.last_error_message}")
+            self.debounce_seconds = self.engine.config.get_watchdog_debounce_seconds()
 
-    else:
-        print(f"Failed to set active project. Error: {engine.last_error_message}")
+    def on_created(self, event):
+        if not isinstance(event, FileCreatedEvent):
+            return # Only interested in file creation events
 
-    engine.shutdown()
-    # Clean up mock directory
-    # shutil.rmtree(mock_project_dir)
-    # print(f"Cleaned up {mock_project_dir}")
-    print("OrchestrationEngine example finished.") 
-    engine.shutdown()
-    # Clean up mock directory
-    # shutil.rmtree(mock_project_dir)
-    # print(f"Cleaned up {mock_project_dir}")
-    print("OrchestrationEngine example finished.") 
-    # print(f"Cleaned up {mock_project_dir}")
-    print("OrchestrationEngine example finished.") 
-    # print(f"Cleaned up {mock_project_dir}")
-    print("OrchestrationEngine example finished.") 
-    # print(f"Cleaned up {mock_project_dir}")
-    print("OrchestrationEngine example finished.") 
+        log_file_path = event.src_path
+        log_file_name = os.path.basename(log_file_path)
+        log_file_dir = os.path.dirname(log_file_path)
+
+        logger.debug(f"Watchdog event: File created '{log_file_name}' in '{log_file_dir}'. Event type: {type(event)}")
+
+        # Debounce
+        current_time = time.monotonic()
+        if log_file_path in self.last_event_time and \
+           (current_time - self.last_event_time[log_file_path]) < self.debounce_seconds:
+            logger.debug(f"Debounced duplicate create event for: {log_file_path}")
+            return
+        self.last_event_time[log_file_path] = current_time
+
+        if not self.engine.config:
+            logger.error("LogFileCreatedHandler: engine.config is None. Cannot get target filename. Ignoring event for {log_file_name}")
+            return
+            
+        target_log_filename = self.engine.config.get_cursor_output_filename()
+        if log_file_name != target_log_filename:
+            logger.debug(f"Ignoring file '{log_file_name}'; does not match target '{target_log_filename}'.")
+            return
+        
+        # Check if the file is in the expected dev_logs_dir (not in 'processed' or other subdirs)
+        # self.engine.dev_logs_dir should be the absolute path to the NON-PROCESSED logs dir.
+        if os.path.abspath(log_file_dir) != os.path.abspath(self.engine.dev_logs_dir):
+            logger.debug(f"Ignoring file '{log_file_name}' in '{log_file_dir}'. Expected in '{self.engine.dev_logs_dir}'.")
+            return
+
+        if self.engine.state != EngineState.RUNNING_WAITING_LOG:
+            logger.warning(f"LogFileHandler: File '{log_file_path}' created, but engine not in RUNNING_WAITING_LOG (state: {self.engine.state.name}). This might be a late event or an issue.")
+            # Decide if to process anyway or strictly ignore. For now, strict ignore.
+            return
+
+        logger.info(f"LogFileHandler: Detected target log file: {log_file_path}")
+        # Run _on_log_file_created in a new thread to avoid blocking watchdog
+        handler_thread = threading.Thread(target=self.engine._on_log_file_created, args=(log_file_path,), daemon=True)
+        handler_thread.name = f"LogCreatedHandlerThread-{os.path.basename(log_file_path)}"
+        handler_thread.start()
+
+# Removed dummy_gui_callback and if __name__ == '__main__' block for OrchestrationEngine
+# This module is intended to be imported, not run directly as the main script.
