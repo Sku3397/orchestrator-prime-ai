@@ -10,10 +10,13 @@ import uuid
 import traceback
 import json
 import logging
+from pathlib import Path
+import sys
+import importlib # Added for reloading
 
 from models import Project, ProjectState, Turn
 from persistence import load_project_state, save_project_state, get_project_by_id, load_projects, PersistenceError
-from gemini_comms import GeminiCommunicator
+# Removed: import gemini_comms
 from config_manager import ConfigManager
 
 # Get the logger instance (assuming it's configured in main.py or another central place)
@@ -44,25 +47,35 @@ class EngineState(Enum):
 
 class OrchestrationEngine:
     CURSOR_SOP_PROMPT_TEXT = """... (Full SOP content as defined previously) ...""" # Keep SOP text here
+    GEMINI_CALL_TIMEOUT_SECONDS = 60  # Added class constant for Gemini API call timeout
 
     def __init__(self):
+        print("DEBUG Engine.__init__: Start", file=sys.stderr) # DEBUG
         logger.info("OrchestrationEngine initializing...")
         self.current_project: Optional[Project] = None
         self.current_project_state: Optional[ProjectState] = None
         self.state: EngineState = EngineState.IDLE
+        self.gemini_comms_module = None 
+        self.gemini_client = None 
+        self.config_manager: Optional[ConfigManager] = None
+        self.persistence_manager = None 
         try:
-            self.gemini_client = GeminiCommunicator() # Might raise if config is bad
-            self.config = ConfigManager()
-            logger.info("GeminiCommunicator and ConfigManager initialized successfully.")
-        except ValueError as e:
-            logger.critical(f"Failed to initialize GeminiCommunicator or ConfigManager: {e}", exc_info=True)
-            # Propagate the error or handle it such that engine is in a clear error state
-            self.gemini_client = None # Ensure it's None if init failed
-            self.config = None
-            self._last_critical_error = f"Initialization failed: {e}" # Store critical error
-            self.state = EngineState.ERROR # Set engine state to ERROR
-            self.last_error_message = self._last_critical_error
-            # No need to raise further if we want the app to attempt to run and show this error
+            print("DEBUG Engine.__init__: Before ConfigManager()", file=sys.stderr) # DEBUG
+            self.config_manager = ConfigManager()
+            print("DEBUG Engine.__init__: After ConfigManager()", file=sys.stderr) # DEBUG
+            
+            self._load_gemini_comms_and_client() # Initial load
+
+            logger.info("OrchestrationEngine initialized.")
+            print("DEBUG Engine.__init__: End", file=sys.stderr) # DEBUG
+        except PersistenceError as pe:
+            logger.critical(f"Engine initialization failed due to PersistenceError: {pe}", exc_info=True)
+            self._set_state(EngineState.ERROR, f"Persistence Error: {pe}")
+            # No raise, allow engine to exist in error state
+        except Exception as e:
+            logger.critical(f"Engine initialization failed: {e}", exc_info=True)
+            self._set_state(EngineState.ERROR, f"Initialization failed: {e}")
+            # No raise here either, to allow observation of the error state if possible
 
         self.file_observer: Optional['Observer'] = None
         self._log_handler: Optional['LogFileCreatedHandler'] = None
@@ -169,10 +182,10 @@ class OrchestrationEngine:
                 self.current_project_state = ProjectState(project_id=proj_id)
             
             try:
-                if not self.config: # Should have been caught by init
+                if not self.config_manager: # Should have been caught by init
                     raise ValueError("ConfigManager not initialized")
-                self.dev_logs_dir = os.path.join(self.current_project.workspace_root_path, self.config.get_default_dev_logs_dir())
-                self.dev_instructions_dir = os.path.join(self.current_project.workspace_root_path, self.config.get_default_dev_instructions_dir())
+                self.dev_logs_dir = os.path.join(self.current_project.workspace_root_path, self.config_manager.get_default_dev_logs_dir())
+                self.dev_instructions_dir = os.path.join(self.current_project.workspace_root_path, self.config_manager.get_default_dev_instructions_dir())
                 os.makedirs(self.dev_logs_dir, exist_ok=True)
                 os.makedirs(os.path.join(self.dev_logs_dir, "processed"), exist_ok=True)
                 os.makedirs(self.dev_instructions_dir, exist_ok=True)
@@ -188,18 +201,40 @@ class OrchestrationEngine:
             try:
                 final_state_to_set = EngineState[final_state_to_set_name]
                 logger.info(f"Project '{self.current_project.name}' loaded. Its state.json specified status: {final_state_to_set_name}")
+                
                 if final_state_to_set == EngineState.PAUSED_WAITING_USER_INPUT:
                     last_question = self._get_last_gemini_question_from_history()
                     final_state_detail = last_question if last_question else "Gemini is waiting for your input. Please check conversation history."
                     logger.info(f"Loaded into PAUSED_WAITING_USER_INPUT. Pending question: {final_state_detail}")
-                self._set_state(final_state_to_set, final_state_detail)
+                    self._set_state(final_state_to_set, final_state_detail)
+                # If loaded state is LOADING_PROJECT, or any other RUNNING_* state, or TASK_COMPLETE, or IDLE, transition to PROJECT_SELECTED
+                # as the context for those states is lost upon restart. Only PAUSED_WAITING_USER_INPUT is fully restorable.
+                elif final_state_to_set not in [EngineState.ERROR]: # Exclude ERROR, PAUSED handled above
+                    logger.info(f"Project loaded with state {final_state_to_set.name}. Transitioning to PROJECT_SELECTED for a clean start.")
+                    self._set_state(EngineState.PROJECT_SELECTED)
+                    self.current_project_state.current_status = EngineState.PROJECT_SELECTED.name # Persist this clean state
+                else: # Preserve ERROR state if loaded
+                    self._set_state(final_state_to_set, "Project loaded into an existing ERROR state.")
+
             except KeyError: 
                  logger.error(f"Invalid state name '{final_state_to_set_name}' in project state for {self.current_project.name}. Resetting to PROJECT_SELECTED.", exc_info=True)
                  self._set_state(EngineState.PROJECT_SELECTED)
                  self.current_project_state.current_status = EngineState.PROJECT_SELECTED.name # Persist the correction
             
-            save_project_state(self.current_project, self.current_project_state) # Save potentially corrected state
+            save_project_state(self.current_project, self.current_project_state) 
             logger.info(f"Active project successfully set. Project: '{self.current_project.name}', Engine state: '{self.state.name}'")
+
+            # Load summarization interval from config
+            self.current_project_state.summarization_interval = self.config_manager.get_summarization_interval()
+            logger.info(f"Summarization interval for project '{self.current_project.name}' set to {self.current_project_state.summarization_interval} turns.")
+
+            # Ensure project directories exist
+            self.current_project_state.dev_instructions_path = Path(self.dev_instructions_dir).resolve()
+            self.current_project_state.dev_logs_path = Path(self.dev_logs_dir).resolve()
+            self.current_project_state.cursor_output_log_path = self.current_project_state.dev_logs_path / "cursor_step_output.txt"
+            self.current_project_state.dev_instructions_path.mkdir(parents=True, exist_ok=True)
+            self.current_project_state.dev_logs_path.mkdir(parents=True, exist_ok=True)
+
             return True
 
     def _get_last_gemini_question_from_history(self) -> Optional[str]:
@@ -278,14 +313,14 @@ class OrchestrationEngine:
              return
 
         try:
-            filename = self.config.get_next_step_filename() # e.g., next_step.txt
+            filename = self.config_manager.get_next_step_filename() # e.g., next_step.txt
             instruction_file_path = os.path.join(self.dev_instructions_dir, filename)
             self._write_to_file(self.dev_instructions_dir, filename, instruction)
             
             self.current_project_state.last_instruction_sent = instruction
             # History for Gemini's own instruction is added in _process_gemini_response before this call.
             logger.info(f"Instruction written to: {instruction_file_path}")
-            self._set_state(EngineState.RUNNING_WAITING_LOG, f"Instruction written. Waiting for Cursor log ('{self.config.get_cursor_output_filename()}').")
+            self._set_state(EngineState.RUNNING_WAITING_LOG, f"Instruction written. Waiting for Cursor log ('{self.config_manager.get_cursor_output_filename()}').")
             self._start_cursor_timeout()
             if not self.file_observer or not self.file_observer.is_alive(): # Start watcher if not already running
                 logger.info("File watcher was not running. Starting it now for RUNNING_WAITING_LOG state.")
@@ -294,7 +329,7 @@ class OrchestrationEngine:
         except (OSError, PersistenceError) as e:
             logger.error(f"Failed to write instruction file '{filename}' to '{self.dev_instructions_dir}': {e}", exc_info=True)
             self._set_state(EngineState.ERROR, f"File Write Error: {e}")
-        except AttributeError as ae: # e.g. if self.config is None
+        except AttributeError as ae: # e.g. if self.config_manager is None
              logger.critical(f"Configuration error while trying to write instruction file: {ae}", exc_info=True)
              self._set_state(EngineState.ERROR, f"Internal Configuration Error: {ae}")
 
@@ -310,7 +345,7 @@ class OrchestrationEngine:
             
             try:
                 # Add a small delay to ensure file is fully written and closed by Cursor agent
-                time.sleep(self.config.get_log_file_read_delay_seconds()) 
+                time.sleep(self.config_manager.get_log_file_read_delay_seconds()) 
                 with open(log_file_path, 'r', encoding='utf-8') as f:
                     log_content = f.read()
                 logger.debug(f"Successfully read log file. Content length: {len(log_content)}")
@@ -322,7 +357,7 @@ class OrchestrationEngine:
                 processed_dir = os.path.join(self.dev_logs_dir, "processed")
                 os.makedirs(processed_dir, exist_ok=True)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                new_log_filename = f"{self.config.get_cursor_output_filename().split('.')[0]}_{timestamp}.txt"
+                new_log_filename = f"{self.config_manager.get_cursor_output_filename().split('.')[0]}_{timestamp}.txt"
                 try:
                     shutil.move(log_file_path, os.path.join(processed_dir, new_log_filename))
                     logger.info(f"Processed log moved to: {os.path.join(processed_dir, new_log_filename)}")
@@ -369,7 +404,9 @@ class OrchestrationEngine:
         self._gemini_call_thread.start()
 
         try:
-            response_data = gemini_q.get(timeout=GEMINI_CALL_TIMEOUT_SECONDS)
+            # Timeout for Gemini call completion
+            response_data = gemini_q.get(timeout=self.GEMINI_CALL_TIMEOUT_SECONDS) # Use self.
+            logger.info(f"Response received from Gemini queue: {response_data.get('status')}")
             if response_data.get("error"):
                 error_msg = response_data["error"]
                 logger.error(f"Gemini call (after log) failed: {error_msg}")
@@ -377,40 +414,40 @@ class OrchestrationEngine:
             else:
                 self._process_gemini_response(response_data)
         except queue.Empty:
-            error_msg = "Gemini call (after log) timed out."
-            logger.error(error_msg)
-            self._set_state(EngineState.ERROR, f"Gemini Timeout: {error_msg}")
+            logger.error("Timeout waiting for Gemini response from thread.")
+            self._set_state(EngineState.ERROR, "Timeout waiting for Gemini response.")
         except Exception as e:
             error_msg = f"Unexpected error after Gemini call (log processing): {e}"
             logger.critical(error_msg, exc_info=True)
             self._set_state(EngineState.ERROR, error_msg)
 
     def _add_to_history(self, sender: str, message: str, needs_user_input: bool = False):
-        if not self.current_project_state:
-            logger.error("Cannot add to history, no project state loaded.")
+        """Adds a turn to the conversation history and saves project state."""
+        if not self.current_project or not self.current_project_state:
+            logger.warning("Attempted to add to history with no active project or state.")
             return
 
-        turn = Turn(sender=sender, message=message, timestamp=datetime.now().isoformat(), needs_user_input=needs_input)
+        # timestamp = datetime.now().isoformat()
+        turn = Turn(sender=sender, message=message, timestamp=self._get_timestamp()) # Corrected: Removed needs_user_input, use self._get_timestamp()
+        
         self.current_project_state.conversation_history.append(turn)
-        logger.debug(f"Added to history: Sender={sender}, NeedsInput={needs_input}, Msg='{message[:50]}...'")
-        try:
-            if self.current_project:
-                 save_project_state(self.current_project, self.current_project_state)
-                 logger.debug(f"Saved project state after adding history for {self.current_project.name}")
-            else:
-                 logger.error("Cannot save history, current_project is None while current_project_state exists.")
-        except PersistenceError as e:
-            logger.error(f"Failed to save project state after adding history: {e}", exc_info=True)
-            self.last_error_message = f"Failed to save project history: {e}"
+        self.current_project_state.last_instruction_sent = message if sender == "GEMINI_MANAGER" else self.current_project_state.last_instruction_sent
+        
+        # Update pending question based on the 'needs_user_input' flag from Gemini's response processing
+        if sender == "GEMINI_MANAGER": # Only Gemini's messages can set a pending question
+            self.current_project_state.pending_user_question = message if needs_user_input else None
+
+        save_project_state(self.current_project, self.current_project_state)
+        logger.debug(f"Added to history for {self.current_project.name}: [{sender}] - '{message[:50]}...' Needs input: {needs_user_input}")
 
     def _check_and_run_summarization(self):
-        if not self.current_project or not self.current_project_state or not self.gemini_client or not self.config:
+        if not self.current_project or not self.current_project_state or not self.gemini_client or not self.config_manager:
             logger.debug("Skipping summarization check: missing project, state, gemini_client or config.")
             return
 
-        interval = self.config.get_summarization_interval()
+        interval = self.config_manager.get_summarization_interval()
         history = self.current_project_state.conversation_history
-        token_limit = self.config.get_max_context_tokens() # A general token limit to consider
+        token_limit = self.config_manager.get_max_context_tokens() # A general token limit to consider
 
         # Simplistic trigger: if history is long and summary is old or non-existent
         # A more robust approach would involve actual token counting of history vs summary.
@@ -463,7 +500,7 @@ class OrchestrationEngine:
                     history_turns=turns_to_summarize, # Send only new turns
                     existing_summary=self.current_project_state.current_summary,
                     project_goal=self.current_project.overall_goal,
-                    max_tokens=self.config.get_max_summary_tokens() # Specific config for summary length
+                    max_tokens=self.config_manager.get_max_summary_tokens() # Specific config for summary length
                 )
 
                 if new_summary:
@@ -551,7 +588,9 @@ class OrchestrationEngine:
             self._gemini_call_thread.start()
 
             try:
-                response_data = gemini_q.get(timeout=GEMINI_CALL_TIMEOUT_SECONDS) 
+                # Timeout for Gemini call completion
+                response_data = gemini_q.get(timeout=self.GEMINI_CALL_TIMEOUT_SECONDS) # Use self.
+                logger.info(f"Response received from Gemini queue: {response_data.get('status')}")
                 if response_data.get("error"):
                     error_msg = response_data["error"]
                     logger.error(f"Gemini call (initial) failed: {error_msg}")
@@ -559,21 +598,20 @@ class OrchestrationEngine:
                 else:
                     self._process_gemini_response(response_data)
             except queue.Empty:
-                error_msg = "Gemini call (initial) timed out."
-                logger.error(error_msg)
-                self._set_state(EngineState.ERROR, f"Gemini Timeout: {error_msg}")
+                logger.error("Timeout waiting for Gemini response from thread.")
+                self._set_state(EngineState.ERROR, "Timeout waiting for Gemini response.")
             except Exception as e:
                 error_msg = f"An unexpected error occurred after initial Gemini call: {e}"
                 logger.critical(error_msg, exc_info=True)
                 self._set_state(EngineState.ERROR, error_msg)
 
     def _get_initial_project_structure_overview(self) -> Optional[str]:
-        if not self.current_project or not self.config:
+        if not self.current_project or not self.config_manager:
             return None
         try:
-            max_files = self.config.get_structure_max_files()
-            max_dirs = self.config.get_structure_max_dirs()
-            excluded_patterns = self.config.get_structure_excluded_patterns()
+            max_files = self.config_manager.get_structure_max_files()
+            max_dirs = self.config_manager.get_structure_max_dirs()
+            excluded_patterns = self.config_manager.get_structure_excluded_patterns()
             
             workspace_path = self.current_project.workspace_root_path
             logger.debug(f"Generating initial structure overview for path: {workspace_path}")
@@ -622,26 +660,25 @@ class OrchestrationEngine:
             return f"[System Note: Error generating project structure overview: {e}]"
 
     def _call_gemini_in_thread(self, project_goal, full_history, current_summary, initial_structure_overview, cursor_log_content, q):
-        logger.debug(f"_call_gemini_in_thread: Goal='{project_goal[:50]}...', History turns={len(full_history)}, Summary='{str(current_summary)[:50]}...', Overview provided={bool(initial_structure_overview)}, Log provided={bool(cursor_log_content)}")
         try:
-            if not self.gemini_client or not self.config:
-                 logger.critical("Gemini client or config not available in _call_gemini_in_thread")
-                 q.put({"error": "Internal: Gemini client or config not initialized"})
-                 return
+            logger.info(f"THREAD {threading.get_ident()}: Calling live Gemini API with history length {len(full_history)}, summary length {len(current_summary) if current_summary else 0}")
+            # Ensure all required parameters for get_next_step_from_gemini are fetched and passed
+            max_hist_turns = self.config_manager.get_max_history_turns()
+            max_ctx_tokens = self.config_manager.get_max_context_tokens()
 
-            response_data = self.gemini_client.generate_step_instruction_with_sop(
-                goal=project_goal,
-                history=full_history,
-                file_contents=None, # TODO: Integrate file contents as context if needed
-                cursor_context=cursor_log_content,
-                initial_overview=initial_structure_overview,
-                current_summary=current_summary
+            response_data = self.gemini_client.get_next_step_from_gemini(
+                project_goal=project_goal,
+                full_conversation_history=full_history,
+                current_context_summary=current_summary,
+                max_history_turns=max_hist_turns, # Pass correctly
+                max_context_tokens=max_ctx_tokens, # Pass correctly
+                cursor_log_content=cursor_log_content,
+                initial_project_structure_overview=initial_structure_overview
             )
             q.put(response_data)
-            logger.debug(f"Gemini response obtained in thread: Status='{response_data.get('status')}', NextStep='{response_data.get('next_step_action')}'")
         except Exception as e:
             logger.error(f"Exception in _call_gemini_in_thread: {e}", exc_info=True)
-            q.put({"error": f"Exception during Gemini call: {e}"}) # Put error message in queue
+            q.put({"status": "ERROR", "content": f"Error in Gemini API call thread: {e}"})
 
     def _process_gemini_response(self, response_data: Dict[str, Any]):
         with self._engine_lock:
@@ -713,7 +750,9 @@ class OrchestrationEngine:
             self._gemini_call_thread.start()
 
             try:
-                response_data = gemini_q.get(timeout=GEMINI_CALL_TIMEOUT_SECONDS)
+                # Timeout for Gemini call completion
+                response_data = gemini_q.get(timeout=self.GEMINI_CALL_TIMEOUT_SECONDS) # Use self.
+                logger.info(f"Response received from Gemini queue: {response_data.get('status')}")
                 if response_data.get("error"):
                     error_msg = response_data["error"]
                     logger.error(f"Gemini call (after user input) failed: {error_msg}")
@@ -721,9 +760,8 @@ class OrchestrationEngine:
                 else:
                     self._process_gemini_response(response_data)
             except queue.Empty:
-                error_msg = "Gemini call (after user input) timed out."
-                logger.error(error_msg)
-                self._set_state(EngineState.ERROR, f"Gemini Timeout: {error_msg}")
+                logger.error("Timeout waiting for Gemini response from thread.")
+                self._set_state(EngineState.ERROR, "Timeout waiting for Gemini response.")
             except Exception as e:
                 error_msg = f"Unexpected error after Gemini call (resume): {e}"
                 logger.critical(error_msg, exc_info=True)
@@ -757,7 +795,7 @@ class OrchestrationEngine:
         with self._engine_lock:
             self._cancel_cursor_timeout() 
             if self.state == EngineState.RUNNING_WAITING_LOG: 
-                timeout_seconds = self.config.get_cursor_log_timeout_seconds()
+                timeout_seconds = self.config_manager.get_cursor_log_timeout_seconds()
                 self._cursor_timeout_timer = threading.Timer(timeout_seconds, self._handle_cursor_timeout)
                 self._cursor_timeout_timer.daemon = True
                 self._cursor_timeout_timer.start()
@@ -775,7 +813,7 @@ class OrchestrationEngine:
     def _handle_cursor_timeout(self):
         with self._engine_lock:
             if self.state == EngineState.RUNNING_WAITING_LOG:
-                error_msg = f"Cursor log timeout: No log file ('{self.config.get_cursor_output_filename()}') received from Cursor agent within {self.config.get_cursor_log_timeout_seconds()} seconds."
+                error_msg = f"Cursor log timeout: No log file ('{self.config_manager.get_cursor_output_filename()}') received from Cursor agent within {self.config_manager.get_cursor_log_timeout_seconds()} seconds."
                 logger.error(error_msg)
                 self._add_to_history("system", error_msg, needs_user_input=False)
                 
@@ -797,7 +835,7 @@ class OrchestrationEngine:
                         self.current_project.overall_goal,
                         self.current_project_state.conversation_history, 
                         self.current_project_state.current_summary,
-                        f"Context: Cursor agent did not produce a log file ('{self.config.get_cursor_output_filename()}') in the expected time. What should be the next step? Consider if retrying, stopping, or asking user is appropriate.",
+                        f"Context: Cursor agent did not produce a log file ('{self.config_manager.get_cursor_output_filename()}') in the expected time. What should be the next step? Consider if retrying, stopping, or asking user is appropriate.",
                         None, # No new cursor log content
                         gemini_q
                     ),
@@ -807,7 +845,9 @@ class OrchestrationEngine:
                 self._gemini_call_thread.start()
 
                 try:
-                    response_data = gemini_q.get(timeout=GEMINI_CALL_TIMEOUT_SECONDS)
+                    # Timeout for Gemini call completion
+                    response_data = gemini_q.get(timeout=self.GEMINI_CALL_TIMEOUT_SECONDS) # Use self.
+                    logger.info(f"Response received from Gemini queue: {response_data.get('status')}")
                     if response_data.get("error"):
                         err = response_data["error"]
                         logger.error(f"Gemini call (after cursor timeout) failed: {err}")
@@ -868,6 +908,102 @@ class OrchestrationEngine:
             self.state = EngineState.IDLE # Final engine state after shutdown process
             logger.info(f"OrchestrationEngine shutdown complete. Final engine state: {self.state.name}.")
 
+    def _load_gemini_comms_and_client(self):
+        logger.info("Attempting to load gemini_comms module and initialize client...")
+        print("DEBUG Engine._load_gemini_comms_and_client: Start", file=sys.stderr)
+        
+        importlib.invalidate_caches()
+        logger.debug("Called importlib.invalidate_caches()")
+        print("DEBUG Engine._load_gemini_comms_and_client: Called importlib.invalidate_caches()", file=sys.stderr)
+
+        module_to_load_name = None
+        mock_comms_path = Path("gemini_comms_mock.py")
+        real_comms_module_name = "gemini_comms_real" # The .py is assumed by importlib
+
+        if mock_comms_path.exists() and mock_comms_path.is_file():
+            logger.info(f"Mock comms file '{mock_comms_path}' exists. Attempting to load it.")
+            print(f"DEBUG Engine._load_gemini_comms_and_client: Mock file '{mock_comms_path}' exists.", file=sys.stderr)
+            module_to_load_name = "gemini_comms_mock" 
+        else:
+            logger.info(f"Mock comms file '{mock_comms_path}' does not exist. Attempting to load real comms module '{real_comms_module_name}'.")
+            print(f"DEBUG Engine._load_gemini_comms_and_client: Mock file '{mock_comms_path}' does NOT exist. Using real: {real_comms_module_name}", file=sys.stderr)
+            module_to_load_name = real_comms_module_name
+        
+        if module_to_load_name in sys.modules:
+            del sys.modules[module_to_load_name]
+            logger.info(f"Removed '{module_to_load_name}' from sys.modules before loading.")
+            print(f"DEBUG Engine._load_gemini_comms_and_client: Removed '{module_to_load_name}' from sys.modules.", file=sys.stderr)
+
+        try:
+            # Dynamically import the chosen module
+            self.gemini_comms_module = importlib.import_module(module_to_load_name)
+            logger.info(f"Successfully loaded module: '{module_to_load_name}' from {getattr(self.gemini_comms_module, '__file__', 'N/A')}")
+            print(f"DEBUG Engine._load_gemini_comms_and_client: Loaded module '{module_to_load_name}' from {getattr(self.gemini_comms_module, '__file__', 'N/A')}", file=sys.stderr)
+
+            if hasattr(self.gemini_comms_module, 'GeminiCommunicator'):
+                self.gemini_client = self.gemini_comms_module.GeminiCommunicator()
+                client_type = type(self.gemini_client).__name__
+                client_module = type(self.gemini_client).__module__
+                logger.info(f"GeminiCommunicator instance created. Type: {client_module}.{client_type}")
+                print(f"DEBUG Engine._load_gemini_comms_and_client: GeminiCommunicator type: {client_module}.{client_type}", file=sys.stderr)
+                
+                # More robust check for mock: check module name or a specific attribute unique to mock
+                if module_to_load_name == "gemini_comms_mock" or hasattr(self.gemini_client, 'mock_type'):
+                    mock_type_attr = getattr(self.gemini_client, 'mock_type', 'N/A')
+                    logger.info(f"Loaded GeminiCommunicator is a MOCK from '{module_to_load_name}'. Mock type attribute: {mock_type_attr}")
+                    print(f"DEBUG Engine._load_gemini_comms_and_client: Detected MOCK client. Module: '{module_to_load_name}', Mock type attr: {mock_type_attr}", file=sys.stderr)
+                else:
+                    logger.info(f"Loaded GeminiCommunicator is REAL from '{module_to_load_name}'.")
+                    print(f"DEBUG Engine._load_gemini_comms_and_client: Detected REAL client from '{module_to_load_name}'.", file=sys.stderr)
+            else:
+                logger.error(f"Module '{module_to_load_name}' loaded, but GeminiCommunicator class not found.")
+                print(f"DEBUG Engine._load_gemini_comms_and_client: GeminiCommunicator class not found in module '{module_to_load_name}'.", file=sys.stderr)
+                self.gemini_client = None
+        except ImportError as ie:
+            logger.error(f"ImportError loading module '{module_to_load_name}': {ie}. This might be critical if it's the real module.", exc_info=True)
+            print(f"DEBUG Engine._load_gemini_comms_and_client: ImportError for '{module_to_load_name}': {ie}", file=sys.stderr)
+            # If mock fails to load, we might want to try loading real one as a fallback, but current logic loads real if mock is absent.
+            # If real one fails here, it's a problem.
+            self.gemini_comms_module = None
+            self.gemini_client = None
+        except Exception as e:
+            logger.error(f"Error during dynamic import or instantiation of GeminiCommunicator from '{module_to_load_name}': {e}", exc_info=True)
+            print(f"DEBUG Engine._load_gemini_comms_and_client: Exception for '{module_to_load_name}': {e}", file=sys.stderr)
+            self.gemini_comms_module = None
+            self.gemini_client = None
+        
+        if not self.gemini_client:
+            logger.warning("Gemini client (self.gemini_client) is None after _load_gemini_comms_and_client attempt.")
+            print("DEBUG Engine._load_gemini_comms_and_client: self.gemini_client is None at end of method.", file=sys.stderr)
+
+    def reinitialize_gemini_client(self):
+        logger.info("Attempting to re-initialize Gemini client by reloading comms module logic...")
+        print("DEBUG Engine.reinitialize_gemini_client: Start", file=sys.stderr)
+        
+        self.gemini_comms_module = None # Reset the stored module object
+        self.gemini_client = None # Reset the client
+
+        self._load_gemini_comms_and_client() # Perform a fresh load
+        
+        if self.gemini_client:
+            logger.info("Gemini client re-initialization attempt complete. Client is now set.")
+            print("DEBUG Engine.reinitialize_gemini_client: Client re-initialization complete, client is set.", file=sys.stderr)
+            
+            # Check if the re-initialized client is mock or real
+            client_module_name = getattr(getattr(self.gemini_client, '__module__', None), 'split', lambda x: [''])('.')[-1]
+            if client_module_name == "gemini_comms_mock" or hasattr(self.gemini_client, 'mock_type'):
+                mock_type_attr = getattr(self.gemini_client, 'mock_type', 'N/A')
+                logger.info(f"Re-initialized GeminiCommunicator is a MOCK. Module: '{client_module_name}', Mock type attribute: {mock_type_attr}")
+                print(f"DEBUG Engine.reinitialize_gemini_client: Detected MOCK client. Module: '{client_module_name}', Mock type attr: {mock_type_attr}", file=sys.stderr)
+            else:
+                logger.info(f"Re-initialized GeminiCommunicator is REAL from module '{client_module_name}'.")
+                print(f"DEBUG Engine.reinitialize_gemini_client: Detected REAL client from '{client_module_name}'.", file=sys.stderr)
+            return True
+        else:
+            logger.error("Gemini client is None after re-initialization attempt.")
+            print("DEBUG Engine.reinitialize_gemini_client: Client is None after re-initialization.", file=sys.stderr)
+            return False
+
     def get_project_path(self):
         # This method seems unused and current_project might not have a direct 'path' attribute.
         # It likely intended to return current_project.workspace_root_path
@@ -878,60 +1014,16 @@ class OrchestrationEngine:
     def get_current_engine_state_name(self): # Renamed for clarity
         return self.state.name
 
-    def _get_timestamp(self) -> str:
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    def _write_to_file(self, directory: str, filename: str, content: str):
-        if not self.current_project:
-            logger.error("Cannot write to file: No current project selected.")
-            raise PersistenceError("Cannot write to file: No current project selected.")
-        
-        abs_project_path = os.path.abspath(self.current_project.workspace_root_path)
-        abs_directory_path = os.path.abspath(directory)
-
-        # Safety check: ensure writing within the project's workspace_root_path
-        # This check might need to be more robust depending on how `directory` is constructed
-        if not abs_directory_path.startswith(abs_project_path) and abs_directory_path != abs_project_path:
-             # Allow if abs_directory_path is a sub-path of abs_project_path
-            is_safe_subpath = False
-            try:
-                common_path = os.path.commonpath([abs_project_path, abs_directory_path])
-                if common_path == abs_project_path:
-                    is_safe_subpath = True
-            except ValueError: # Paths on different drives (Windows)
-                pass 
-            if not is_safe_subpath:
-                logger.error(f"Security Error: Attempt to write outside of project workspace. Project: '{abs_project_path}', Target Dir: '{abs_directory_path}'")
-                raise PersistenceError(f"Security Error: Attempt to write to '{abs_directory_path}' which is outside project workspace '{abs_project_path}'.")
-
-        if not os.path.exists(abs_directory_path):
-            try:
-                os.makedirs(abs_directory_path, exist_ok=True)
-                logger.debug(f"Created directory for write: {abs_directory_path}")
-            except OSError as e:
-                logger.error(f"Failed to create directory {abs_directory_path} for writing: {e}", exc_info=True)
-                raise PersistenceError(f"Failed to create directory {abs_directory_path}: {e}")
-
-        file_path = os.path.join(abs_directory_path, filename)
-        try:
-            with open(file_path, "w", encoding='utf-8') as f:
-                f.write(content)
-            logger.info(f"File written successfully: {file_path}")
-        except IOError as e:
-            logger.error(f"Failed to write to file {file_path}: {e}", exc_info=True)
-            raise PersistenceError(f"Failed to write to file {file_path}: {e}")
-
-
 class LogFileCreatedHandler(FileSystemEventHandler): # type: ignore
     def __init__(self, engine: 'OrchestrationEngine'):
         super().__init__()
         self.engine = engine
         self.last_event_time: Dict[str, float] = {}
         self.debounce_seconds = 2.0 # Configurable debounce window
-        if not self.engine.config:
-            logger.error("LogFileCreatedHandler initialized without engine.config! Using default debounce.")
+        if not self.engine.config_manager:
+            logger.error("LogFileCreatedHandler initialized without engine.config_manager! Using default debounce.")
         else:
-            self.debounce_seconds = self.engine.config.get_watchdog_debounce_seconds()
+            self.debounce_seconds = self.engine.config_manager.get_watchdog_debounce_seconds()
 
     def on_created(self, event):
         if not isinstance(event, FileCreatedEvent):
@@ -951,11 +1043,11 @@ class LogFileCreatedHandler(FileSystemEventHandler): # type: ignore
             return
         self.last_event_time[log_file_path] = current_time
 
-        if not self.engine.config:
-            logger.error("LogFileCreatedHandler: engine.config is None. Cannot get target filename. Ignoring event for {log_file_name}")
+        if not self.engine.config_manager:
+            logger.error("LogFileCreatedHandler: engine.config_manager is None. Cannot get target filename. Ignoring event for {log_file_name}")
             return
             
-        target_log_filename = self.engine.config.get_cursor_output_filename()
+        target_log_filename = self.engine.config_manager.get_cursor_output_filename()
         if log_file_name != target_log_filename:
             logger.debug(f"Ignoring file '{log_file_name}'; does not match target '{target_log_filename}'.")
             return

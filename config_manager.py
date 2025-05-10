@@ -1,7 +1,8 @@
+from typing import List, Optional, Dict, Any
 import configparser
 import os
-from typing import Optional, Any
 import logging
+from persistence import PersistenceError # Ensure PersistenceError is imported or defined
 
 # Get logger instance
 logger = logging.getLogger("orchestrator_prime")
@@ -73,12 +74,15 @@ class ConfigManager:
             logger.info(f"Default configuration file '{self.config_file}' created.")
         except IOError as e:
             logger.error(f"Could not write default config file '{self.config_file}': {e}", exc_info=True)
+            # Raise an exception to make the failure explicit
+            raise PersistenceError(f"Failed to create default config file '{self.config_file}': {e}") from e
 
     def get_api_key(self) -> Optional[str]:
         key = self.get_config_value('API', 'gemini_api_key', fallback=None)
         if key == 'YOUR_API_KEY_HERE':
             logger.warning("API Key is set to placeholder 'YOUR_API_KEY_HERE' in config.ini")
-            return None
+            # Return the placeholder itself, not None, so downstream can see the actual placeholder value.
+            return 'YOUR_API_KEY_HERE' 
         return key
 
     def set_api_key(self, api_key: str) -> bool:
@@ -91,8 +95,8 @@ class ConfigManager:
         return self.get_config_value('PATHS', 'default_dev_instructions_dir', fallback='./dev_instructions')
         
     def get_gemini_model(self) -> str:
-        return self.get_config_value('API', 'gemini_model', fallback='gemini-1.5-flash-latest')
-    
+        return self.config.get('API', 'gemini_model', fallback='gemini-1.5-flash') # Default to flash
+
     def get_max_output_tokens_gemini(self) -> int:
          return self.config.getint('GEMINI_CONTEXT', 'max_output_tokens', fallback=8192)
          
@@ -108,13 +112,8 @@ class ConfigManager:
             return 20
 
     def get_max_context_tokens(self) -> int:
-        value = self.get_config_value('GEMINI_CONTEXT', 'max_context_tokens', fallback='30000')
-        try:
-            return int(value)
-        except (ValueError, TypeError):
-            logger.warning(f"Invalid value '{value}' for max_context_tokens in config. Using default 30000.")
-            return 30000
-            
+        return self.config.getint('API', 'max_context_tokens', fallback=30000) # Default from example
+
     def get_max_summary_tokens(self) -> int:
          value = self.get_config_value('GEMINI_CONTEXT', 'max_summary_tokens', fallback='1000')
          try:
@@ -133,7 +132,8 @@ class ConfigManager:
         return self.config.getfloat('ENGINE_CONFIG', 'watchdog_debounce_seconds', fallback=2.0)
 
     def get_summarization_interval(self) -> int:
-        return self.config.getint('SETTINGS', 'summary_interval', fallback=10)
+        """Returns the number of Gemini turns before a summarization should occur."""
+        return self.config.getint('Engine', 'summarization_interval', fallback=5)
         
     def get_next_step_filename(self) -> str:
         return self.get_config_value('PATHS', 'next_step_filename', fallback='next_step.txt')
