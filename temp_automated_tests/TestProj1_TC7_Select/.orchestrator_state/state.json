@@ -1,0 +1,10 @@
+{
+    "project_id": "100f4947-a0c4-4bae-bc50-5d2a8ee5ee7e",
+    "conversation_history": [],
+    "current_status": "PROJECT_SELECTED",
+    "current_goal": null,
+    "last_instruction_sent": null,
+    "context_summary": null,
+    "pending_user_question": null,
+    "gemini_turns_since_last_summary": 0
+}

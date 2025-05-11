@@ -1,15 +1,31 @@
 import sys
-print("DEBUG: main.py script started.", file=sys.stderr)
+import json
+
+def print_to_stderr(message: str):
+    print(f"DEBUG: print_to_stderr called with: {message[:50]}...", flush=True) # For tracing
+    try:
+        if sys.stderr and hasattr(sys.stderr, 'writable') and sys.stderr.writable() and not sys.stderr.closed:
+            print(message, file=sys.stderr, flush=True)
+            print(f"DEBUG: Message printed to actual sys.stderr.", flush=True) # For tracing
+        else:
+            status_str = f"stderr_None: {sys.stderr is None}, "
+            status_str += f"stderr_closed: {sys.stderr.closed if hasattr(sys.stderr, 'closed') else 'N/A'}, "
+            status_str += f"stderr_writable: {sys.stderr.writable() if hasattr(sys.stderr, 'writable') else 'N/A'}"
+            print(f"STDERR_FALLBACK ({status_str}): {message}", flush=True)
+    except Exception as e:
+        print(f"STDERR_PRINT_ERROR: Could not print message '{message[:50]}...' due to: {type(e).__name__} - {e}", flush=True)
+
+print_to_stderr("DEBUG: main.py script started.")
 import os
 import traceback
 import logging
-print("DEBUG main.py: After os, traceback, logging imports", file=sys.stderr)
+print_to_stderr("DEBUG main.py: After os, traceback, logging imports")
 from engine import OrchestrationEngine, EngineState
-print("DEBUG main.py: After engine import", file=sys.stderr)
-from persistence import load_projects, add_project, Project
-print("DEBUG main.py: After persistence import", file=sys.stderr)
+print_to_stderr("DEBUG main.py: After engine import")
+from persistence import load_projects, add_project, Project, PersistenceError, DuplicateProjectError
+print_to_stderr("DEBUG main.py: After persistence import")
 from models import OrchestratorState
-print("DEBUG main.py: After models import", file=sys.stderr)
+print_to_stderr("DEBUG main.py: After models import")
 
 # --- Setup Logging ---
 logger = logging.getLogger("orchestrator_prime")
@@ -23,11 +39,11 @@ fh.setFormatter(formatter)
 ch.setFormatter(formatter)
 logger.addHandler(fh)
 logger.addHandler(ch)
-print("DEBUG main.py: Logging configured.", file=sys.stderr)
+print_to_stderr("DEBUG main.py: Logging configured.")
 # --- End Logging Setup ---
 
 def ensure_app_data_scaffolding():
-    print("DEBUG main.py: Inside ensure_app_data_scaffolding - Start", file=sys.stderr)
+    print_to_stderr("DEBUG main.py: Inside ensure_app_data_scaffolding - Start")
     app_data_dir = "app_data"
     projects_json_path = os.path.join(app_data_dir, "projects.json")
     try:
@@ -40,9 +56,9 @@ def ensure_app_data_scaffolding():
             logger.info(f"Created empty projects file: {projects_json_path}")
     except OSError as e:
         logger.critical(f"CRITICAL ERROR: Could not create app_data directory or projects.json: {e}")
-        print(f"DEBUG main.py: ensure_app_data_scaffolding - CRITICAL ERROR: {e}", file=sys.stderr)
+        print_to_stderr(f"DEBUG main.py: ensure_app_data_scaffolding - CRITICAL ERROR: {e}")
         sys.exit(1)
-    print("DEBUG main.py: Inside ensure_app_data_scaffolding - End", file=sys.stderr)
+    print_to_stderr("DEBUG main.py: Inside ensure_app_data_scaffolding - End")
 
 def print_welcome():
     print("\nWelcome to Orchestrator Prime (Terminal Edition)")
@@ -91,7 +107,7 @@ def run_terminal_interface(engine: OrchestrationEngine):
                 # If sys.stdin.readline() and user just hits enter, it's '\n', strip makes it empty.
                 # If process is fed EOF, readline() returns empty string.
                 if not active_project_name: # if no project selected, EOF might mean quit
-                    print("DEBUG main.py: EOF or empty input with no project selected, treating as quit.", file=sys.stderr)
+                    print_to_stderr("DEBUG main.py: EOF or empty input with no project selected, treating as quit.")
                     engine.shutdown()
                     break
                 continue
@@ -174,29 +190,57 @@ def run_terminal_interface(engine: OrchestrationEngine):
 
                 new_project = Project(name=name, workspace_root_path=root_path, overall_goal=goal)
                 try:
-                    add_project(new_project) # This also saves projects
-                    print(f"--- Project '{name}' added successfully. ---")
+                    added_project_obj = add_project(new_project) # This also saves projects
+                    # add_project now returns the project or raises error
+                    if added_project_obj:
+                        print(f"--- Project '{name}' added successfully. ---")
+                    else:
+                        # This case should ideally not be reached if add_project raises errors on failure
+                        print(f"--- Failed to add project '{name}'. Reason unknown (add_project returned None). ---")
+                except DuplicateProjectError as e:
+                    print(f"--- Error adding project: {e} ---") # TC5 expects this format
+                except PersistenceError as e:
+                    print(f"--- Persistence error adding project: {e} ---")
                 except Exception as e:
-                    print(f"--- Error adding project: {e} ---")
+                    # General catch-all for other unexpected errors during add_project call
+                    print(f"--- An unexpected error occurred while adding project: {e} ---")
             
-            elif user_input.lower().startswith("project select "):
-                name_to_select = user_input[len("project select "):].strip()
+            elif user_input.lower().startswith("project select ") or user_input.lower() == "project select":
+                name_to_select = user_input[len("project select"):].strip()
                 if name_to_select:
                     try:
                         if engine.set_active_project(name_to_select):
                             active_project_name = name_to_select # Update local active_project_name
                             print(f"--- Project '{active_project_name}' selected. ---")
+                            # --- PATCH: Print prompt and status after selection ---
+                            print(f"OP (Project: {active_project_name}) > ")
+                            print_status(engine)
                         else:
                             # set_active_project now logs more details, so this can be simpler
                             print(f"--- Could not select project '{name_to_select}'. See logs for details. ---")
+                            # --- FIX: Reset active_project_name if selection failed ---
+                            active_project_name = None
                     except Exception as e: # Should be caught by engine ideally
-                        print(f"--- Error selecting project '{name_to_select}': {e} ---")
+                        print(f"--- Error selecting project '{name_to_select}': {e}" )
                         logger.error(f"Error in main during project select: {e}", exc_info=True)
-                else:
-                    print("--- Please specify a project name to select. Usage: project select <name> ---")
+                        # --- FIX: Reset active_project_name on exception ---
+                        active_project_name = None
+                else: # No name provided, meaning "project select" was entered alone for deselection
+                    if active_project_name:
+                        print(f"--- Deselecting active project: {active_project_name} ---", flush=True)
+                        engine.set_active_project(None) # Signal engine to deselect
+                        active_project_name = None
+                        print("--- Active project cleared. ---", flush=True)
+                    else:
+                        print("--- No project currently selected. ---", flush=True)
 
             elif user_input.lower() == "status":
                 print_status(engine)
+                # --- FIX: Synchronize prompt with engine state after status ---
+                if engine.current_project is not None:
+                    active_project_name = engine.current_project.name
+                else:
+                    active_project_name = None
             
             elif user_input.lower() == "stop":
                 if engine.current_project and engine.state not in [EngineState.IDLE, EngineState.STOPPED, EngineState.ERROR, EngineState.TASK_COMPLETE]:
@@ -205,12 +249,51 @@ def run_terminal_interface(engine: OrchestrationEngine):
                 else:
                     print("--- No active task to stop, or engine is not in a stoppable state. ---")
             
-            elif user_input.lower() == "_reload_gemini_client":
-                # This is a hidden command for testing/debugging to reload the gemini client in the engine
-                if engine.reinitialize_gemini_client():
-                    print("Engine's Gemini client re-initialization attempted successfully.", flush=True)
+            elif user_input.lower() == "_show_full_history":
+                if engine.current_project and engine.current_project_state:
+                    print("--- Full Conversation History ---")
+                    for i, turn in enumerate(engine.current_project_state.conversation_history):
+                        print(f"Turn {i+1} ({turn.sender}): {turn.message}")
+                        if turn.metadata:
+                            print(f"  Metadata: {turn.metadata}")
+                    print("--- End of History ---")
                 else:
-                    print("Engine's Gemini client re-initialization failed. Check logs.", flush=True)
+                    print("No active project or history to show.")
+                continue
+            elif user_input.lower() == "_force_summarize":
+                if engine.current_project and engine.current_project_state:
+                    print("Forcing summarization attempt...")
+                    if engine._check_and_run_summarization(force_summarize=True):
+                        print(f"Summarization run. New summary length: {len(engine.current_project_state.context_summary) if engine.current_project_state.context_summary else 0}")
+                    else:
+                        print("Summarization not run (e.g. not enough turns or error).")
+                else:
+                    print("No active project to summarize.")
+                continue
+            elif user_input.lower().startswith("_apply_mock"):
+                parts = user_input.split(maxsplit=2)
+                if len(parts) >= 2:
+                    mock_type = parts[1]
+                    details_json = parts[2] if len(parts) > 2 else "null"
+                    try:
+                        details = json.loads(details_json)
+                        if engine.apply_mock_communicator(mock_type, details):
+                            print(f"Applied mock communicator: '{mock_type}' with details: {details}.", flush=True)
+                        else:
+                            print(f"Failed to apply mock communicator: '{mock_type}'. Check logs.", flush=True)
+                    except json.JSONDecodeError:
+                        print(f"Invalid JSON details for _apply_mock: {details_json}", flush=True)
+                    except Exception as e:
+                        print(f"Error processing _apply_mock: {e}", flush=True)
+                else:
+                    print("Usage: _apply_mock <mock_type> [json_details]", flush=True)
+                continue
+            elif user_input.lower() == "_reload_gemini_client": # This now restores the REAL client
+                if engine.reinitialize_gemini_client(): # This method now specifically loads the REAL client
+                    print("Engine's REAL Gemini client re-initialization attempted successfully.", flush=True)
+                else:
+                    print("Engine's REAL Gemini client re-initialization failed. Check logs.", flush=True)
+                continue
             
             elif user_input.lower().startswith("goal "):
                 if not engine.current_project:
@@ -223,14 +306,29 @@ def run_terminal_interface(engine: OrchestrationEngine):
                     else:
                         print("--- Goal cannot be empty. Usage: goal <your goal> ---")
             
-            else: # Default: Treat as an instruction if a project is active
-                if engine.current_project:
-                    # If engine is PAUSED_WAITING_USER_INPUT, this 'else' block shouldn't be hit due to earlier check.
-                    # So, this implies a new instruction or continuation when not explicitly waiting for input.
-                    print(f"--- Treating '{user_input}' as a new instruction for project '{active_project_name}' ---")
-                    engine.start_task(initial_user_instruction=user_input) # Or a more generic 'handle_instruction'
-                else:
-                    print(f"--- Unknown command '{user_input}'. Type 'help' for available commands or 'project select <name>' to choose a project. ---")
+            else:
+                # Check if the input matches any known command
+                known_commands = [
+                    "help", "project list", "project add", "project select", "goal", "input", "status", "stop", "quit"
+                ]
+                is_known = False
+                for cmd_prefix in known_commands: # Iterate through known command prefixes
+                    if user_input.lower().startswith(cmd_prefix):
+                        # Exact match or command with arguments
+                        if user_input.lower() == cmd_prefix or user_input.lower().startswith(cmd_prefix + " "):
+                            is_known = True
+                            break
+                if not is_known:
+                    # If it's not a known command and a project is active, treat as an implicit goal.
+                    if active_project_name:
+                        print(f"--- Treating '{user_input}' as new goal/instruction for project '{active_project_name}' ---")
+                        try:
+                            engine.start_task(user_input)
+                        except Exception as e:
+                            print(f"--- Error starting task: {e} ---")
+                    else:
+                        print(f"--- Unknown command '{user_input}'. Type 'help' for available commands or 'project select <name>' to choose a project. ---")
+                    continue # explicit continue after handling unknown/implicit goal
 
             # Post-command state checks (mainly for asynchronous changes)
             if engine.state == EngineState.PAUSED_WAITING_USER_INPUT:
@@ -250,6 +348,31 @@ def run_terminal_interface(engine: OrchestrationEngine):
                 else:
                     print(f"--- ENGINE ERROR: An unspecified error occurred. Check logs. ---")
 
+            if engine.state in [EngineState.RUNNING_CALLING_GEMINI,
+                                EngineState.RUNNING_WAITING_INITIAL_GEMINI,
+                                EngineState.RUNNING_PROCESSING_LOG,
+                                EngineState.SUMMARIZING_CONTEXT]:
+                logger.debug(f"MAIN_LOOP_TRACE: Engine state is {engine.state.name}. Checking Gemini queue.")
+                # Non-blocking check for Gemini response
+                try:
+                    gemini_response = engine.check_gemini_response_queue_non_blocking()
+                    if gemini_response:
+                        logger.info(f"MAIN_LOOP_TRACE: Got Gemini response from queue. About to handle: {str(gemini_response)[:100]}...")
+                        engine.handle_gemini_response_from_main(gemini_response)
+                    else:
+                       logger.debug(f"MAIN_LOOP_TRACE: Gemini queue was empty for state {engine.state.name}.")
+                except Exception as e_queue:
+                    logger.error(f"Error checking/handling Gemini response queue: {e_queue}", exc_info=True)
+                    engine.main_loop_error_handler(f"Queue error: {e_queue}")
+
+            # Display intermediate status if a longer operation
+            if engine.state == EngineState.RUNNING_CALLING_GEMINI or engine.state == EngineState.RUNNING_WAITING_INITIAL_GEMINI:
+                print(f"--- Gemini is waiting for response. ---")
+            elif engine.state == EngineState.RUNNING_PROCESSING_LOG:
+                print(f"--- Gemini is processing a log. ---")
+            elif engine.state == EngineState.SUMMARIZING_CONTEXT:
+                print(f"--- Gemini is summarizing context. ---")
+
         except KeyboardInterrupt:
             print("\n--- Keyboard interrupt detected. Shutting down... ---")
             logger.info("Keyboard interrupt detected by user in main loop.")
@@ -268,69 +391,57 @@ def run_terminal_interface(engine: OrchestrationEngine):
             traceback.print_exc() # For dev console, if visible
 
 def print_status(engine: OrchestrationEngine):
-    active_project_state_obj = engine.current_project_state
     print("\n--- Orchestrator Prime Status ---")
-    print(f"Engine Status: {engine.state.name}")
-    if engine.current_project and active_project_state_obj:
+    if engine.current_project:
         print(f"Active Project: {engine.current_project.name} (ID: {engine.current_project.id})")
-        print(f"  Workspace: {engine.current_project.workspace_root_path}")
-        print(f"  Current Goal: {active_project_state_obj.current_goal if active_project_state_obj.current_goal else 'N/A'}")
-        
-        pending_question = engine.pending_user_question
-        if pending_question: # Check if there's actually a question
-            print(f"    Pending Question from Gemini: {pending_question}")
-        
-        # Display conversation history snippet if available
-        if active_project_state_obj.conversation_history:
-            print(f"  Conversation History: {len(active_project_state_obj.conversation_history)} turns")
-            # last_few_turns = active_project_state_obj.conversation_history[-3:] # Last 3 turns
-            # for i, turn in enumerate(last_few_turns):
-            #     print(f"    Turn -{len(last_few_turns)-i}: [{turn.sender}] {turn.message[:70]}...")
-        else:
-            print("  Conversation History: Empty")
-
-        print(f"  Gemini Turns Since Last Summary: {active_project_state_obj.gemini_turns_since_last_summary}")
-        if active_project_state_obj.context_summary:
-             print(f"  Context Summary (length): {len(active_project_state_obj.context_summary)} chars")
-        else:
-             print("  Context Summary: Not yet generated.")
-
+        print(f"Workspace: {engine.current_project.workspace_root_path}")
+        print(f"Overall Goal: {engine.current_project.overall_goal}")
+        if engine.current_project_state:
+            print(f"Conversation Turns: {len(engine.current_project_state.conversation_history)}")
+            print(f"Context Summary Length: {len(engine.current_project_state.context_summary) if engine.current_project_state.context_summary else 0} chars")
+            print(f"Last Instruction to Cursor: '{engine.current_project_state.last_instruction_sent[:70]}...'" if engine.current_project_state.last_instruction_sent else "None")
     else:
-        print("No project is currently active.")
+        print("Active Project: None")
 
-    # Display last error if any, regardless of current state (could be a past error)
-    if hasattr(engine, '_last_critical_error') and engine._last_critical_error: # Check internal attribute if it exists
-         print(f"--- Last Critical Engine Error: {engine._last_critical_error} ---")
-    elif hasattr(engine, 'last_error_message') and engine.last_error_message and engine.state != EngineState.ERROR:
-         # If there's a non-critical error message logged by the engine
-         print(f"--- Last Engine Message: {engine.last_error_message} ---")
+    print(f"Engine Status: {engine.get_current_engine_state_name()}") # Use new getter
+
+    # Display the special status message if set by the engine
+    if hasattr(engine, 'status_message_for_display') and engine.status_message_for_display:
+        print(f"Engine Message: {engine.status_message_for_display}")
+        engine.status_message_for_display = None # Clear after displaying
+
+    if engine.state == EngineState.ERROR and engine.last_error_message:
+        print(f"Error Message: {engine.last_error_message}")
+    elif engine.state == EngineState.PAUSED_WAITING_USER_INPUT and engine.pending_user_question:
+        print(f"Gemini Needs Input: {engine.pending_user_question}")
+    print("-------------------------------")
 
 
 if __name__ == "__main__":
-    print("DEBUG main.py: __main__ block entered", file=sys.stderr)
+    print_to_stderr("DEBUG main.py: __main__ block entered")
     sys.stderr.flush()
     engine_instance = None # Define engine_instance here for finally block
     try:
-        print("DEBUG main.py: Before ensure_app_data_scaffolding() call", file=sys.stderr)
+        print_to_stderr("DEBUG main.py: Before ensure_app_data_scaffolding() call")
         sys.stderr.flush()
         ensure_app_data_scaffolding()
-        print("DEBUG main.py: After ensure_app_data_scaffolding() call", file=sys.stderr)
+        print_to_stderr("DEBUG main.py: After ensure_app_data_scaffolding() call")
         sys.stderr.flush()
         
         logger.info("Orchestrator Prime starting...") # Moved after ensure_app_data for log file
-        print("DEBUG main.py: Logger 'Orchestrator Prime starting...' sent.", file=sys.stderr)
+        print_to_stderr("DEBUG main.py: Logger 'Orchestrator Prime starting...' sent.")
         sys.stderr.flush()
 
-        print("DEBUG main.py: Before OrchestrationEngine() instantiation", file=sys.stderr)
+        print_to_stderr("DEBUG main.py: Before OrchestrationEngine() instantiation")
         sys.stderr.flush()
         engine_instance = OrchestrationEngine()
-        print("DEBUG main.py: After OrchestrationEngine() instantiation", file=sys.stderr)
+        print_to_stderr("DEBUG main.py: After OrchestrationEngine() instantiation")
         sys.stderr.flush()
 
-        print("DEBUG main.py: Before run_terminal_interface() call", file=sys.stderr)
+        print_to_stderr("DEBUG main.py: Before run_terminal_interface() call")
         sys.stderr.flush()
         run_terminal_interface(engine_instance)
-        print("DEBUG main.py: After run_terminal_interface() call - normally not reached unless quit issues prompt", file=sys.stderr)
+        print_to_stderr("DEBUG main.py: After run_terminal_interface() call - normally not reached unless quit issues prompt")
         sys.stderr.flush()
 
     except Exception as e:
@@ -346,12 +457,12 @@ if __name__ == "__main__":
     finally:
         # Ensure engine shutdown is attempted if instance was created
         if engine_instance and hasattr(engine_instance, '_shutdown_complete') and not engine_instance._shutdown_complete:
-            print("DEBUG main.py: Ensuring engine shutdown in finally block.", file=sys.stderr)
+            print_to_stderr("DEBUG main.py: Ensuring engine shutdown in finally block.")
             sys.stderr.flush()
             engine_instance.shutdown()
         
         final_msg = "Orchestrator Prime shutdown sequence complete from main."
-        print(f"DEBUG main.py: {final_msg}", file=sys.stderr)
+        print_to_stderr(f"DEBUG main.py: {final_msg}")
         sys.stderr.flush()
         if logger: # Check if logger was initialized
             logger.info(final_msg)

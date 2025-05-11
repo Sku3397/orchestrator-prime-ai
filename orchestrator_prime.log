@@ -1,12 +1,46 @@
-2025-05-09 22:06:15,214 - orchestrator_prime - INFO - main.py:320 - Orchestrator Prime starting...
-2025-05-09 22:06:15,214 - orchestrator_prime - INFO - engine.py:55 - OrchestrationEngine initializing...
-2025-05-09 22:06:15,215 - orchestrator_prime - DEBUG - config_manager.py:18 - Reading configuration from config.ini
-2025-05-09 22:06:15,217 - orchestrator_prime - INFO - engine.py:1005 - Attempting to load gemini_comms module and initialize client...
-2025-05-09 22:06:15,532 - orchestrator_prime - INFO - engine.py:1015 - Dynamically loaded gemini_comms module from: F:\COD\orchestrator_prime\gemini_comms.py
-2025-05-09 22:06:15,533 - orchestrator_prime - DEBUG - config_manager.py:18 - Reading configuration from config.ini
-2025-05-09 22:06:15,534 - orchestrator_prime - INFO - engine.py:1021 - GeminiCommunicator instance created. Type: <class 'gemini_comms.GeminiCommunicator'>
-2025-05-09 22:06:15,534 - orchestrator_prime - INFO - engine.py:1025 - Loaded GeminiCommunicator appears to be a MOCK. Mock type: STANDARD_INSTRUCTION
-2025-05-09 22:06:15,534 - orchestrator_prime - INFO - engine.py:70 - OrchestrationEngine initialized.
-2025-05-09 22:06:15,536 - orchestrator_prime - INFO - engine.py:871 - OrchestrationEngine shutdown sequence initiated...
-2025-05-09 22:06:15,536 - orchestrator_prime - INFO - engine.py:879 - Engine state before shutdown: IDLE
-2025-05-09 22:06:15,536 - orchestrator_prime - INFO - engine.py:881 - Cancelling any pending cursor timeout...
+2025-05-11 04:59:48,189 - orchestrator_prime - INFO - main.py:431 - Orchestrator Prime starting...
+2025-05-11 04:59:48,189 - orchestrator_prime - INFO - engine.py:66 - OrchestrationEngine initializing...
+2025-05-11 04:59:48,189 - orchestrator_prime - DEBUG - config_manager.py:18 - Reading configuration from config.ini
+2025-05-11 04:59:48,191 - orchestrator_prime - INFO - engine.py:1016 - Attempting to load REAL Gemini client from gemini_comms_real...
+2025-05-11 04:59:49,700 - orchestrator_prime - DEBUG - config_manager.py:18 - Reading configuration from config.ini
+2025-05-11 04:59:49,701 - orchestrator_prime - WARNING - config_manager.py:83 - API Key is set to placeholder 'YOUR_API_KEY_HERE' in config.ini
+2025-05-11 04:59:49,701 - orchestrator_prime - INFO - engine.py:1030 - Successfully loaded REAL GeminiCommunicator from gemini_comms_real. Client type: <class 'gemini_comms_real.GeminiCommunicator'>
+2025-05-11 04:59:49,701 - orchestrator_prime - INFO - engine.py:82 - OrchestrationEngine initialized.
+2025-05-11 04:59:50,604 - orchestrator_prime - INFO - persistence.py:239 - Assigned new ID 0627f9e6-6c88-4173-8ae1-9904da1ec2e3 to project 'TestProj1_TC20_Summary' during add.
+2025-05-11 04:59:50,605 - orchestrator_prime - INFO - persistence.py:101 - Saved 1 projects to app_data\projects.json
+2025-05-11 04:59:50,605 - orchestrator_prime - INFO - persistence.py:246 - Successfully added and saved project: TestProj1_TC20_Summary (ID: 0627f9e6-6c88-4173-8ae1-9904da1ec2e3)
+2025-05-11 04:59:50,905 - orchestrator_prime - INFO - engine.py:155 - Attempting to set active project to: TestProj1_TC20_Summary
+2025-05-11 04:59:50,905 - orchestrator_prime - INFO - engine.py:122 - Engine state changed from IDLE to LOADING_PROJECT - Detail: Loading project: TestProj1_TC20_Summary...
+2025-05-11 04:59:50,916 - orchestrator_prime - INFO - engine.py:171 - Setting active project to: TestProj1_TC20_Summary
+2025-05-11 04:59:50,916 - orchestrator_prime - INFO - persistence.py:120 - State file not found for project 'TestProj1_TC20_Summary' at F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC20_Summary\.orchestrator_state\state.json. Returning None (new state will be created by engine if needed).
+2025-05-11 04:59:50,916 - orchestrator_prime - INFO - engine.py:207 - No existing project state for TestProj1_TC20_Summary. Creating new state.
+2025-05-11 04:59:50,917 - orchestrator_prime - DEBUG - engine.py:225 - Ensured project directories exist: Logs='F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC20_Summary\./dev_logs', Instructions='F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC20_Summary\./dev_instructions'
+2025-05-11 04:59:50,917 - orchestrator_prime - INFO - engine.py:236 - Project 'TestProj1_TC20_Summary' loaded. Its state.json specified status: IDLE
+2025-05-11 04:59:50,917 - orchestrator_prime - INFO - engine.py:246 - Project loaded with state IDLE. Transitioning to PROJECT_SELECTED for a clean start.
+2025-05-11 04:59:50,917 - orchestrator_prime - INFO - engine.py:122 - Engine state changed from LOADING_PROJECT to PROJECT_SELECTED
+2025-05-11 04:59:50,918 - orchestrator_prime - INFO - persistence.py:50 - Created project state directory: F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC20_Summary\.orchestrator_state
+2025-05-11 04:59:50,918 - orchestrator_prime - DEBUG - persistence.py:181 - Attempting to save project state for 'TestProj1_TC20_Summary' to F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC20_Summary\.orchestrator_state\state.json
+2025-05-11 04:59:50,919 - orchestrator_prime - INFO - persistence.py:187 - Successfully saved project state for 'TestProj1_TC20_Summary' (Status: PROJECT_SELECTED)
+2025-05-11 04:59:50,919 - orchestrator_prime - DEBUG - engine.py:128 - Saved project state for TestProj1_TC20_Summary with status PROJECT_SELECTED
+2025-05-11 04:59:50,919 - orchestrator_prime - DEBUG - persistence.py:181 - Attempting to save project state for 'TestProj1_TC20_Summary' to F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC20_Summary\.orchestrator_state\state.json
+2025-05-11 04:59:50,919 - orchestrator_prime - INFO - persistence.py:187 - Successfully saved project state for 'TestProj1_TC20_Summary' (Status: PROJECT_SELECTED)
+2025-05-11 04:59:50,920 - orchestrator_prime - INFO - engine.py:271 - Active project successfully set. Project: 'TestProj1_TC20_Summary', Engine state: 'PROJECT_SELECTED'
+2025-05-11 04:59:50,920 - orchestrator_prime - INFO - engine.py:275 - Summarization interval for project 'TestProj1_TC20_Summary' set to 2 turns.
+2025-05-11 04:59:51,206 - orchestrator_prime - INFO - engine.py:1048 - Attempting to apply MOCK Gemini communicator of type: 'STANDARD_INSTRUCTION' with details: {'instruction': 'Turn 1: Initial instruction after goal.'}
+2025-05-11 04:59:51,206 - orchestrator_prime - DEBUG - engine.py:1054 - Removing existing 'gemini_comms_mocks' from sys.modules for fresh mock import.
+2025-05-11 04:59:51,208 - orchestrator_prime - INFO - engine.py:1069 - Successfully applied MOCK Gemini communicator: 'STANDARD_INSTRUCTION'. Current client: <class 'gemini_comms_mocks.StandardInstructionMock'>
+2025-05-11 04:59:51,508 - orchestrator_prime - INFO - engine.py:618 - Starting new task for project 'TestProj1_TC20_Summary' with initial instruction. Clearing previous conversation history for this task segment.
+2025-05-11 04:59:51,508 - orchestrator_prime - DEBUG - persistence.py:181 - Attempting to save project state for 'TestProj1_TC20_Summary' to F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC20_Summary\.orchestrator_state\state.json
+2025-05-11 04:59:51,509 - orchestrator_prime - INFO - persistence.py:187 - Successfully saved project state for 'TestProj1_TC20_Summary' (Status: PROJECT_SELECTED)
+2025-05-11 04:59:51,509 - orchestrator_prime - DEBUG - engine.py:500 - Added to history for TestProj1_TC20_Summary: [user] - 'Goal for TC20 context summarization test....' Needs input: False
+2025-05-11 04:59:51,509 - orchestrator_prime - INFO - engine.py:122 - Engine state changed from PROJECT_SELECTED to RUNNING_WAITING_INITIAL_GEMINI - Detail: Starting task: Goal for TC20 context summarization test....
+2025-05-11 04:59:51,509 - orchestrator_prime - DEBUG - persistence.py:181 - Attempting to save project state for 'TestProj1_TC20_Summary' to F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC20_Summary\.orchestrator_state\state.json
+2025-05-11 04:59:51,510 - orchestrator_prime - INFO - persistence.py:187 - Successfully saved project state for 'TestProj1_TC20_Summary' (Status: RUNNING_WAITING_INITIAL_GEMINI)
+2025-05-11 04:59:51,510 - orchestrator_prime - DEBUG - engine.py:128 - Saved project state for TestProj1_TC20_Summary with status RUNNING_WAITING_INITIAL_GEMINI
+2025-05-11 04:59:51,510 - orchestrator_prime - DEBUG - engine.py:582 - Summarization not needed. History length: 1, Summary exists: False, Last summarized turns: 0
+2025-05-11 04:59:51,510 - orchestrator_prime - INFO - engine.py:630 - Calling Gemini with initial instruction for task: 'Goal for TC20 context summarization test....'
+2025-05-11 04:59:51,510 - orchestrator_prime - DEBUG - engine.py:676 - Generating initial structure overview for path: F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC20_Summary
+2025-05-11 04:59:51,511 - orchestrator_prime - DEBUG - engine.py:712 - Generated structure overview: Initial project structure overview (max 10 files, 10 dirs, excluding ['.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode']): ["Top-level directories: ['.orchestrator_state', 'dev_instructions', 'dev_logs']"].
+2025-05-11 04:59:51,512 - orchestrator_prime - INFO - engine.py:723 - THREAD 8280: Calling live Gemini API with history length 1, summary length 0
+2025-05-11 04:59:51,562 - orchestrator_prime - INFO - engine.py:652 - Response received from Gemini queue: SUCCESS
+2025-05-11 04:59:51,562 - orchestrator_prime - CRITICAL - engine.py:746 - PGR_CRITICAL_TRACE: ENTERED _process_gemini_response. ALIVE AND WELL.

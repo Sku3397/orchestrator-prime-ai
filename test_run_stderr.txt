@@ -1,0 +1,416 @@
+2025-05-11 04:59:24,060 - TestRunner - INFO - Executing placeholder cleanup_test_environment().
+2025-05-11 04:59:24,060 - TestRunner - INFO - Starting main.py process...
+2025-05-11 04:59:24,060 - TestRunner - INFO - Running main.py from CWD: F:\COD\orchestrator_prime
+2025-05-11 04:59:24,075 - TestRunner - INFO - Process started (PID: 5064). Waiting for initial prompt...
+2025-05-11 04:59:26,087 - TestRunner - INFO - Captured stderr during read_until_prompt (for 'OP >'):
+--- BEGIN STDERR ---
+DEBUG: main.py script started.
+DEBUG main.py: After os, traceback, logging imports
+DEBUG Engine: SUCCESSFULLY imported gemini_comms_mocks at top level.
+DEBUG main.py: After engine import
+DEBUG main.py: After persistence import
+DEBUG main.py: After models import
+DEBUG main.py: Logging configured.
+DEBUG main.py: __main__ block entered
+DEBUG main.py: Before ensure_app_data_scaffolding() call
+DEBUG main.py: Inside ensure_app_data_scaffolding - Start
+DEBUG main.py: Inside ensure_app_data_scaffolding - End
+DEBUG main.py: After ensure_app_data_scaffolding() call
+2025-05-11 04:59:24,379 - orchestrator_prime - INFO - main.py:431 - Orchestrator Prime starting...
+DEBUG main.py: Logger 'Orchestrator Prime starting...' sent.
+DEBUG main.py: Before OrchestrationEngine() instantiation
+DEBUG Engine.__init__: Start
+2025-05-11 04:59:24,379 - orchestrator_prime - INFO - engine.py:66 - OrchestrationEngine initializing...
+DEBUG Engine.__init__: Before ConfigManager()
+DEBUG Engine.__init__: After ConfigManager()
+2025-05-11 04:59:24,381 - orchestrator_prime - INFO - engine.py:1016 - Attempting to load REAL Gemini client from gemini_comms_real...
+2025-05-11 04:59:26,086 - orchestrator_prime - WARNING - config_manager.py:83 - API Key is set to placeholder 'YOUR_API_KEY_HERE' in config.ini
+API Key is a placeholder ('YOUR_API_KEY_HERE') in config.ini. Gemini live mode will not function. Mocking should be used for tests requiring Gemini interaction.
+2025-05-11 04:59:26,087 - orchestrator_prime - INFO - engine.py:1030 - Successfully loaded REAL GeminiCommunicator from gemini_comms_real. Client type: <class 'gemini_comms_real.GeminiCommunicator'>
+2025-05-11 04:59:26,087 - orchestrator_prime - INFO - engine.py:82 - OrchestrationEngine initialized.
+DEBUG Engine.__init__: End
+DEBUG main.py: After OrchestrationEngine() instantiation
+DEBUG main.py: Before run_terminal_interface() call
+--- END STDERR ---
+2025-05-11 04:59:26,087 - TestRunner - INFO - --- Running Test Case 1: Help Command ---
+2025-05-11 04:59:26,087 - TestRunner - INFO - --- Starting TC1 (Help Command): Help Command ---
+2025-05-11 04:59:26,087 - TestRunner - INFO - SEND: help
+2025-05-11 04:59:26,410 - TestRunner - INFO - --- Test Case 1: Help Command PASSED --- (Details: Help Command - PASSED)
+2025-05-11 04:59:26,410 - TestRunner - INFO - --- Running Test Case 2: Project List (Empty) ---
+2025-05-11 04:59:26,410 - TestRunner - INFO - --- Starting TC2 (Project List (Empty)): Project List (Empty) ---
+2025-05-11 04:59:26,460 - TestRunner - INFO - SEND: project list
+2025-05-11 04:59:26,772 - TestRunner - INFO - --- Test Case 2: Project List (Empty) PASSED --- (Details: Project List (Empty) - Cleared projects.json for clean state.; Project List (Empty) - Verified 'No projects found.' message.; Project List (Empty) - PASSED)
+2025-05-11 04:59:26,772 - TestRunner - INFO - --- Running Test Case 3: Project Add (Success) ---
+2025-05-11 04:59:26,773 - TestRunner - INFO - --- Starting TC3 (Project Add (Success)): Project Add (Success) ---
+2025-05-11 04:59:26,823 - TestRunner - INFO - SEND: project add
+2025-05-11 04:59:27,124 - TestRunner - INFO - SEND: TestProj1_TC3
+2025-05-11 04:59:27,425 - TestRunner - INFO - SEND: F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC3
+2025-05-11 04:59:27,725 - TestRunner - INFO - SEND: Test goal for TC3
+2025-05-11 04:59:28,026 - TestRunner - INFO - Captured stderr during expect_output (for 'Project 'TestProj1_TC3' added successfully.'):
+--- BEGIN STDERR ---
+2025-05-11 04:59:27,726 - orchestrator_prime - INFO - persistence.py:239 - Assigned new ID 1a5fc936-d65a-4421-8075-b8c392699ca5 to project 'TestProj1_TC3' during add.
+--- END STDERR ---
+2025-05-11 04:59:28,036 - TestRunner - INFO - Captured stderr during read_until_prompt (for 'OP >'):
+--- BEGIN STDERR ---
+2025-05-11 04:59:27,727 - orchestrator_prime - INFO - persistence.py:101 - Saved 1 projects to app_data\projects.json
+--- END STDERR ---
+2025-05-11 04:59:28,037 - TestRunner - INFO - --- Test Case 3: Project Add (Success) PASSED --- (Details: Project Add (Success) - Project: TestProj1_TC3, Path: F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC3; Project add success message verified.; Project verified in projects.json.; Project Add (Success) - PASSED)
+2025-05-11 04:59:28,037 - TestRunner - INFO - --- Running Test Case 4: Project Add (Invalid Path) ---
+2025-05-11 04:59:28,037 - TestRunner - INFO - --- Starting TC4 (Project Add (Invalid Path)): Project Add (Invalid Path) ---
+2025-05-11 04:59:28,037 - TestRunner - INFO - SEND: project add
+2025-05-11 04:59:28,337 - TestRunner - INFO - Captured stderr during expect_output (for 'Project Name:'):
+--- BEGIN STDERR ---
+2025-05-11 04:59:27,727 - orchestrator_prime - INFO - persistence.py:246 - Successfully added and saved project: TestProj1_TC3 (ID: 1a5fc936-d65a-4421-8075-b8c392699ca5)
+--- END STDERR ---
+2025-05-11 04:59:28,337 - TestRunner - INFO - SEND: TestProj1_TC4
+2025-05-11 04:59:28,638 - TestRunner - INFO - SEND: Z:\this\path\should\not\exist_TC4
+2025-05-11 04:59:28,938 - TestRunner - INFO - SEND: cancel
+2025-05-11 04:59:39,250 - TestRunner - WARNING - Timeout (10s) waiting for prompt: 'OP >'. Collected STDOUT output:
+Invalid path. Workspace Root Path (must be an existing directory):
+
+2025-05-11 04:59:39,250 - TestRunner - INFO - --- Test Case 4: Project Add (Invalid Path) PASSED --- (Details: Project Add (Invalid Path) - Project: TestProj1_TC4, Invalid Path: Z:\this\path\should\not\exist_TC4; Re-prompt for invalid workspace path verified.; Warning: 'Project addition cancelled.' message not found after sending cancel. Got: Invalid path. Workspace Root Path (must be an existing directory):
+; Project correctly not found in projects.json after cancel.; Project Add (Invalid Path) - PASSED)
+2025-05-11 04:59:39,250 - TestRunner - INFO - TC_STEP (TC5): TC5 requires a fresh OrchestratorProcess. Terminating existing and starting new one for this test case.
+2025-05-11 04:59:39,250 - TestRunner - INFO - Terminating process (PID: 5064)...
+2025-05-11 04:59:39,252 - TestRunner - INFO - Process terminated with code: 1
+2025-05-11 04:59:39,253 - TestRunner - INFO - Starting main.py process...
+2025-05-11 04:59:39,254 - TestRunner - INFO - Running main.py from CWD: F:\COD\orchestrator_prime
+2025-05-11 04:59:39,262 - TestRunner - INFO - Process started (PID: 6688). Waiting for initial prompt...
+2025-05-11 04:59:41,095 - TestRunner - INFO - Captured stderr during read_until_prompt (for 'OP >'):
+--- BEGIN STDERR ---
+DEBUG: main.py script started.
+DEBUG main.py: After os, traceback, logging imports
+DEBUG Engine: SUCCESSFULLY imported gemini_comms_mocks at top level.
+DEBUG main.py: After engine import
+DEBUG main.py: After persistence import
+DEBUG main.py: After models import
+DEBUG main.py: Logging configured.
+DEBUG main.py: __main__ block entered
+DEBUG main.py: Before ensure_app_data_scaffolding() call
+DEBUG main.py: Inside ensure_app_data_scaffolding - Start
+DEBUG main.py: Inside ensure_app_data_scaffolding - End
+DEBUG main.py: After ensure_app_data_scaffolding() call
+2025-05-11 04:59:39,443 - orchestrator_prime - INFO - main.py:431 - Orchestrator Prime starting...
+DEBUG main.py: Logger 'Orchestrator Prime starting...' sent.
+DEBUG main.py: Before OrchestrationEngine() instantiation
+DEBUG Engine.__init__: Start
+2025-05-11 04:59:39,443 - orchestrator_prime - INFO - engine.py:66 - OrchestrationEngine initializing...
+DEBUG Engine.__init__: Before ConfigManager()
+DEBUG Engine.__init__: After ConfigManager()
+2025-05-11 04:59:39,444 - orchestrator_prime - INFO - engine.py:1016 - Attempting to load REAL Gemini client from gemini_comms_real...
+2025-05-11 04:59:41,094 - orchestrator_prime - WARNING - config_manager.py:83 - API Key is set to placeholder 'YOUR_API_KEY_HERE' in config.ini
+API Key is a placeholder ('YOUR_API_KEY_HERE') in config.ini. Gemini live mode will not function. Mocking should be used for tests requiring Gemini interaction.
+2025-05-11 04:59:41,095 - orchestrator_prime - INFO - engine.py:1030 - Successfully loaded REAL GeminiCommunicator from gemini_comms_real. Client type: <class 'gemini_comms_real.GeminiCommunicator'>
+2025-05-11 04:59:41,095 - orchestrator_prime - INFO - engine.py:82 - OrchestrationEngine initialized.
+DEBUG Engine.__init__: End
+DEBUG main.py: After OrchestrationEngine() instantiation
+DEBUG main.py: Before run_terminal_interface() call
+--- END STDERR ---
+2025-05-11 04:59:41,095 - TestRunner - INFO - TC_STEP (TC5): Fresh OrchestratorProcess started for TC5.
+2025-05-11 04:59:41,095 - TestRunner - INFO - --- Running Test Case 5: Project Add (Duplicate Name) ---
+2025-05-11 04:59:41,095 - TestRunner - INFO - --- Starting TC5 (Project Add (Duplicate Name)): Project Add (Duplicate Name) ---
+2025-05-11 04:59:41,096 - TestRunner - INFO - TC_STEP (Project Add (Duplicate Name)): Force terminating and restarting OrchestratorProcess for a clean slate.
+2025-05-11 04:59:41,096 - TestRunner - INFO - Terminating process (PID: 6688)...
+2025-05-11 04:59:41,098 - TestRunner - INFO - Process terminated with code: 1
+2025-05-11 04:59:41,098 - TestRunner - INFO - Starting main.py process...
+2025-05-11 04:59:41,099 - TestRunner - INFO - Running main.py from CWD: F:\COD\orchestrator_prime
+2025-05-11 04:59:41,117 - TestRunner - INFO - Process started (PID: 5532). Waiting for initial prompt...
+2025-05-11 04:59:43,249 - TestRunner - INFO - Captured stderr during read_until_prompt (for 'OP >'):
+--- BEGIN STDERR ---
+DEBUG: main.py script started.
+DEBUG main.py: After os, traceback, logging imports
+DEBUG Engine: SUCCESSFULLY imported gemini_comms_mocks at top level.
+DEBUG main.py: After engine import
+DEBUG main.py: After persistence import
+DEBUG main.py: After models import
+DEBUG main.py: Logging configured.
+DEBUG main.py: __main__ block entered
+DEBUG main.py: Before ensure_app_data_scaffolding() call
+DEBUG main.py: Inside ensure_app_data_scaffolding - Start
+DEBUG main.py: Inside ensure_app_data_scaffolding - End
+DEBUG main.py: After ensure_app_data_scaffolding() call
+2025-05-11 04:59:41,328 - orchestrator_prime - INFO - main.py:431 - Orchestrator Prime starting...
+DEBUG main.py: Logger 'Orchestrator Prime starting...' sent.
+DEBUG main.py: Before OrchestrationEngine() instantiation
+DEBUG Engine.__init__: Start
+2025-05-11 04:59:41,328 - orchestrator_prime - INFO - engine.py:66 - OrchestrationEngine initializing...
+DEBUG Engine.__init__: Before ConfigManager()
+DEBUG Engine.__init__: After ConfigManager()
+2025-05-11 04:59:41,330 - orchestrator_prime - INFO - engine.py:1016 - Attempting to load REAL Gemini client from gemini_comms_real...
+2025-05-11 04:59:43,248 - orchestrator_prime - WARNING - config_manager.py:83 - API Key is set to placeholder 'YOUR_API_KEY_HERE' in config.ini
+API Key is a placeholder ('YOUR_API_KEY_HERE') in config.ini. Gemini live mode will not function. Mocking should be used for tests requiring Gemini interaction.
+2025-05-11 04:59:43,249 - orchestrator_prime - INFO - engine.py:1030 - Successfully loaded REAL GeminiCommunicator from gemini_comms_real. Client type: <class 'gemini_comms_real.GeminiCommunicator'>
+2025-05-11 04:59:43,249 - orchestrator_prime - INFO - engine.py:82 - OrchestrationEngine initialized.
+DEBUG Engine.__init__: End
+DEBUG main.py: After OrchestrationEngine() instantiation
+--- END STDERR ---
+2025-05-11 04:59:43,249 - TestRunner - INFO - TC_STEP (Project Add (Duplicate Name)): OrchestratorProcess restarted. Proceeding with TC5.
+2025-05-11 04:59:43,252 - TestRunner - INFO - SEND: project add
+2025-05-11 04:59:43,553 - TestRunner - INFO - Captured stderr during expect_output (for 'Project Name:'):
+--- BEGIN STDERR ---
+DEBUG main.py: Before run_terminal_interface() call
+--- END STDERR ---
+2025-05-11 04:59:43,553 - TestRunner - INFO - SEND: TestProj1_TC5_Dup
+2025-05-11 04:59:43,854 - TestRunner - INFO - SEND: F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC5_Dup_1
+2025-05-11 04:59:44,155 - TestRunner - INFO - SEND: Goal for first TC5 project
+2025-05-11 04:59:44,456 - TestRunner - INFO - Captured stderr during expect_output (for 'Project 'TestProj1_TC5_Dup' added successfully.'):
+--- BEGIN STDERR ---
+2025-05-11 04:59:44,156 - orchestrator_prime - INFO - persistence.py:239 - Assigned new ID 0a5b76fa-9a0f-4a7c-98b6-8a19c84da893 to project 'TestProj1_TC5_Dup' during add.
+--- END STDERR ---
+2025-05-11 04:59:44,456 - TestRunner - INFO - Captured stderr during read_until_prompt (for 'OP >'):
+--- BEGIN STDERR ---
+2025-05-11 04:59:44,156 - orchestrator_prime - INFO - persistence.py:101 - Saved 2 projects to app_data\projects.json
+--- END STDERR ---
+2025-05-11 04:59:44,456 - TestRunner - INFO - SEND: project add
+2025-05-11 04:59:44,757 - TestRunner - INFO - Captured stderr during expect_output (for 'Project Name:'):
+--- BEGIN STDERR ---
+2025-05-11 04:59:44,157 - orchestrator_prime - INFO - persistence.py:246 - Successfully added and saved project: TestProj1_TC5_Dup (ID: 0a5b76fa-9a0f-4a7c-98b6-8a19c84da893)
+--- END STDERR ---
+2025-05-11 04:59:44,757 - TestRunner - INFO - SEND: TestProj1_TC5_Dup
+2025-05-11 04:59:45,058 - TestRunner - INFO - SEND: F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC5_Dup_2
+2025-05-11 04:59:45,359 - TestRunner - INFO - SEND: Goal for second TC5 project
+2025-05-11 04:59:45,660 - TestRunner - INFO - Captured stderr during expect_output (for 'Error adding project: Project with name 'TestProj1_TC5_Dup' already exists.'):
+--- BEGIN STDERR ---
+2025-05-11 04:59:45,369 - orchestrator_prime - ERROR - persistence.py:221 - Project with name 'TestProj1_TC5_Dup' already exists.
+--- END STDERR ---
+2025-05-11 04:59:45,661 - TestRunner - INFO - --- Test Case 5: Project Add (Duplicate Name) PASSED --- (Details: Project Add (Duplicate Name) - Proj Name: TestProj1_TC5_Dup, Path1: F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC5_Dup_1, Path2: F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC5_Dup_2; First instance added.; Duplicate name error verified.; Verified only one instance in projects.json.; Project Add (Duplicate Name) - PASSED)
+2025-05-11 04:59:45,661 - TestRunner - INFO - --- Running Test Case 6: Project List (With Project) ---
+2025-05-11 04:59:45,661 - TestRunner - INFO - --- Starting TC6 (Project List (With Project)): Project List (With Project) ---
+2025-05-11 04:59:45,663 - TestRunner - INFO - SEND: project list
+2025-05-11 04:59:45,964 - TestRunner - INFO - --- Test Case 6: Project List (With Project) PASSED --- (Details: Project List (With Project) - Project: TestProj1_TC6_List; Created projects.json with 'TestProj1_TC6_List'.; Project list verified.; Project List (With Project) - PASSED)
+2025-05-11 04:59:45,964 - TestRunner - INFO - --- Running Test Case 7: Project Select (Success) ---
+2025-05-11 04:59:45,964 - TestRunner - INFO - --- Starting TC7 (Project Select (Success)): Project Select (Success) ---
+2025-05-11 04:59:45,967 - TestRunner - INFO - SEND: project select TestProj1_TC7_Select
+2025-05-11 04:59:46,268 - TestRunner - INFO - Captured stderr during read_until_prompt (for 'OP (Project: TestProj1_TC7_Select) >'):
+--- BEGIN STDERR ---
+2025-05-11 04:59:45,967 - orchestrator_prime - INFO - engine.py:155 - Attempting to set active project to: TestProj1_TC7_Select
+2025-05-11 04:59:45,967 - orchestrator_prime - INFO - engine.py:122 - Engine state changed from IDLE to LOADING_PROJECT - Detail: Loading project: TestProj1_TC7_Select...
+--- END STDERR ---
+2025-05-11 04:59:46,268 - TestRunner - INFO - SEND: status
+2025-05-11 04:59:46,569 - TestRunner - INFO - Captured stderr during expect_output (for 'Active Project: TestProj1_TC7_Select'):
+--- BEGIN STDERR ---
+2025-05-11 04:59:45,977 - orchestrator_prime - INFO - engine.py:171 - Setting active project to: TestProj1_TC7_Select
+2025-05-11 04:59:45,977 - orchestrator_prime - INFO - persistence.py:120 - State file not found for project 'TestProj1_TC7_Select' at F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC7_Select\.orchestrator_state\state.json. Returning None (new state will be created by engine if needed).
+2025-05-11 04:59:45,977 - orchestrator_prime - INFO - engine.py:207 - No existing project state for TestProj1_TC7_Select. Creating new state.
+--- END STDERR ---
+2025-05-11 04:59:46,569 - TestRunner - INFO - Captured stderr during read_until_prompt (for 'OP (Project: TestProj1_TC7_Select) >'):
+--- BEGIN STDERR ---
+2025-05-11 04:59:45,978 - orchestrator_prime - INFO - engine.py:236 - Project 'TestProj1_TC7_Select' loaded. Its state.json specified status: IDLE
+2025-05-11 04:59:45,978 - orchestrator_prime - INFO - engine.py:246 - Project loaded with state IDLE. Transitioning to PROJECT_SELECTED for a clean start.
+2025-05-11 04:59:45,978 - orchestrator_prime - INFO - engine.py:122 - Engine state changed from LOADING_PROJECT to PROJECT_SELECTED
+2025-05-11 04:59:45,979 - orchestrator_prime - INFO - persistence.py:50 - Created project state directory: F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC7_Select\.orchestrator_state
+2025-05-11 04:59:45,979 - orchestrator_prime - INFO - persistence.py:187 - Successfully saved project state for 'TestProj1_TC7_Select' (Status: PROJECT_SELECTED)
+2025-05-11 04:59:45,980 - orchestrator_prime - INFO - persistence.py:187 - Successfully saved project state for 'TestProj1_TC7_Select' (Status: PROJECT_SELECTED)
+2025-05-11 04:59:45,981 - orchestrator_prime - INFO - engine.py:271 - Active project successfully set. Project: 'TestProj1_TC7_Select', Engine state: 'PROJECT_SELECTED'
+2025-05-11 04:59:45,981 - orchestrator_prime - INFO - engine.py:275 - Summarization interval for project 'TestProj1_TC7_Select' set to 2 turns.
+--- END STDERR ---
+2025-05-11 04:59:46,569 - TestRunner - INFO - TC_STEP (Project Select (Success)): Sending 'project select' (to deselect), then 'status'.
+2025-05-11 04:59:46,569 - TestRunner - INFO - SEND: project select
+2025-05-11 04:59:47,370 - TestRunner - INFO - SEND: status
+2025-05-11 04:59:47,670 - TestRunner - INFO - Captured stderr during read_until_prompt (for 'OP >'):
+--- BEGIN STDERR ---
+2025-05-11 04:59:46,569 - orchestrator_prime - INFO - engine.py:141 - ENGINE_TRACE: set_active_project received None. Attempting to clear active project.
+2025-05-11 04:59:46,569 - orchestrator_prime - INFO - engine.py:142 - ENGINE_TRACE: Calling stop_file_watcher.
+2025-05-11 04:59:46,569 - orchestrator_prime - INFO - engine.py:144 - ENGINE_TRACE: Returned from stop_file_watcher.
+2025-05-11 04:59:46,569 - orchestrator_prime - INFO - engine.py:145 - ENGINE_TRACE: Calling _cancel_cursor_timeout.
+2025-05-11 04:59:46,570 - orchestrator_prime - INFO - engine.py:881 - ENGINE_TRACE_INTERNAL: _cancel_cursor_timeout entered (full logic).
+2025-05-11 04:59:46,570 - orchestrator_prime - INFO - engine.py:913 - ENGINE_TRACE_INTERNAL: _cancel_cursor_timeout called, timer was already None.
+2025-05-11 04:59:46,570 - orchestrator_prime - INFO - engine.py:914 - ENGINE_TRACE_INTERNAL: _cancel_cursor_timeout exiting (full logic).
+2025-05-11 04:59:46,570 - orchestrator_prime - INFO - engine.py:147 - ENGINE_TRACE: Returned from _cancel_cursor_timeout.
+2025-05-11 04:59:46,570 - orchestrator_prime - INFO - engine.py:150 - ENGINE_TRACE: Calling _set_state to IDLE.
+2025-05-11 04:59:46,570 - orchestrator_prime - INFO - engine.py:122 - Engine state changed from PROJECT_SELECTED to IDLE - Detail: Active project cleared.
+2025-05-11 04:59:46,570 - orchestrator_prime - INFO - engine.py:152 - ENGINE_TRACE: Active project cleared. Engine is IDLE.
+--- END STDERR ---
+2025-05-11 04:59:47,671 - TestRunner - INFO - TC_STEP (Project Select (Success)): Output after 'project select' cmd and its prompt: <<<
+--- Orchestrator Prime Status ---
+Active Project: TestProj1_TC7_Select (ID: 100f4947-a0c4-4bae-bc50-5d2a8ee5ee7e)
+Workspace: F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC7_Select
+Overall Goal: Goal for TC7
+Conversation Turns: 0
+Context Summary Length: 0 chars
+None
+Engine Status: PROJECT_SELECTED
+-------------------------------
+OP (Project: TestProj1_TC7_Select) > 
+--- Deselecting active project: TestProj1_TC7_Select ---
+--- Active project cleared. ---
+OP > 
+>>>
+2025-05-11 04:59:47,671 - TestRunner - INFO - TC_STEP (Project Select (Success)): Output after 'status' cmd and its prompt: <<<
+--- Orchestrator Prime Status ---
+Active Project: None
+Engine Status: IDLE
+-------------------------------
+OP > 
+>>>
+2025-05-11 04:59:47,671 - TestRunner - INFO - --- Test Case 7: Project Select (Success) PASSED --- (Details: Project Select (Success) - Project: TestProj1_TC7_Select; Created projects.json with 'TestProj1_TC7_Select'.; Project select success message and prompt verified.; Status command confirmed active project.; Deselect messages ('--- Deselecting active project: TestProj1_TC7_Select ---' and '--- Active project cleared. ---') found in first read.; Status message 'Active Project: None' found in second read.; Verified all messages after project deselection and status check.; Project Select (Success) - PASSED)
+2025-05-11 04:59:47,671 - TestRunner - INFO - --- Running Test Case 8: Project Select (Non-Existent) ---
+2025-05-11 04:59:47,671 - TestRunner - INFO - --- Starting TC8 (Project Select (Non-Existent)): Project Select (Non-Existent) ---
+2025-05-11 04:59:47,671 - TestRunner - INFO - SEND: project select ThisProjectDoesNotExist_TC8
+2025-05-11 04:59:47,972 - TestRunner - INFO - Captured stderr during expect_output (for '--- Could not select project 'ThisProjectDoesNotExist_TC8'. See logs for details. ---'):
+--- BEGIN STDERR ---
+2025-05-11 04:59:47,672 - orchestrator_prime - INFO - engine.py:155 - Attempting to set active project to: ThisProjectDoesNotExist_TC8
+--- END STDERR ---
+2025-05-11 04:59:47,972 - TestRunner - INFO - Captured stderr during read_until_prompt (for 'OP >'):
+--- BEGIN STDERR ---
+2025-05-11 04:59:47,672 - orchestrator_prime - INFO - engine.py:122 - Engine state changed from IDLE to LOADING_PROJECT - Detail: Loading project: ThisProjectDoesNotExist_TC8...
+--- END STDERR ---
+2025-05-11 04:59:47,973 - TestRunner - INFO - --- Test Case 8: Project Select (Non-Existent) PASSED --- (Details: Project Select (Non-Existent) - Trying to select: ThisProjectDoesNotExist_TC8; Ensured projects.json is empty.; Non-existent project error verified by expect_output.; Project Select (Non-Existent) - PASSED)
+2025-05-11 04:59:47,973 - TestRunner - INFO - --- Running Test Case 9: Status (No Project Selected) ---
+2025-05-11 04:59:47,973 - TestRunner - INFO - --- Test Case 9: Status (No Project Selected) PASSED --- (Details: Status (No Project Selected) - Placeholder PASSED)
+2025-05-11 04:59:47,973 - TestRunner - INFO - --- Running Test Case 10: Status (Project Selected, Idle) ---
+2025-05-11 04:59:47,973 - TestRunner - INFO - --- Test Case 10: Status (Project Selected, Idle) PASSED --- (Details: Status (Project Selected, Idle) - Placeholder PASSED)
+2025-05-11 04:59:47,973 - TestRunner - INFO - --- Running Test Case 11: Invalid Command ---
+2025-05-11 04:59:47,973 - TestRunner - INFO - --- Test Case 11: Invalid Command PASSED --- (Details: Invalid Command - Placeholder PASSED)
+2025-05-11 04:59:47,973 - TestRunner - INFO - --- Running Test Case 12: Start Task (Live Gemini - Short) ---
+2025-05-11 04:59:47,973 - TestRunner - INFO - --- Test Case 12: Start Task (Live Gemini - Short) PASSED --- (Details: Start Task (Live Gemini - Short) - Placeholder PASSED)
+2025-05-11 04:59:47,973 - TestRunner - INFO - --- Running Test Case 13: Multi-turn Conversation (Mocked) ---
+2025-05-11 04:59:47,973 - TestRunner - INFO - --- Test Case 13: Multi-turn Conversation (Mocked) PASSED --- (Details: Multi-turn Conversation (Mocked) - Placeholder PASSED)
+2025-05-11 04:59:47,973 - TestRunner - INFO - --- Running Test Case 14: Cursor Timeout Error Handling ---
+2025-05-11 04:59:47,973 - TestRunner - INFO - --- Test Case 14: Cursor Timeout Error Handling PASSED --- (Details: Cursor Timeout Error Handling - Placeholder PASSED)
+2025-05-11 04:59:47,973 - TestRunner - INFO - --- Running Test Case 15: Gemini API Auth Error (Mocked) ---
+2025-05-11 04:59:47,973 - TestRunner - INFO - --- Test Case 15: Gemini API Auth Error (Mocked) PASSED --- (Details: Gemini API Auth Error (Mocked) - Placeholder PASSED)
+2025-05-11 04:59:47,974 - TestRunner - INFO - --- Running Test Case 16: Gemini API Other Error (Mocked) ---
+2025-05-11 04:59:47,974 - TestRunner - INFO - --- Test Case 16: Gemini API Other Error (Mocked) PASSED --- (Details: Gemini API Other Error (Mocked) - Placeholder PASSED)
+2025-05-11 04:59:47,974 - TestRunner - INFO - --- Running Test Case 17: Stop Command During Task ---
+2025-05-11 04:59:47,974 - TestRunner - INFO - --- Test Case 17: Stop Command During Task PASSED --- (Details: Stop Command During Task - Placeholder PASSED)
+2025-05-11 04:59:47,974 - TestRunner - INFO - --- Running Test Case 18: Engine State Reset Logic ---
+2025-05-11 04:59:47,974 - TestRunner - INFO - --- Test Case 18: Engine State Reset Logic PASSED --- (Details: Engine State Reset Logic - Placeholder PASSED)
+2025-05-11 04:59:47,974 - TestRunner - INFO - --- Running Test Case 19: State Persistence (Stop/Restart) ---
+2025-05-11 04:59:47,974 - TestRunner - INFO - --- Test Case 19: State Persistence (Stop/Restart) PASSED --- (Details: State Persistence (Stop/Restart) - Placeholder PASSED)
+2025-05-11 04:59:47,974 - TestRunner - INFO - --- Running Test Case 20: Context Summarization ---
+2025-05-11 04:59:47,974 - TestRunner - INFO - --- Starting TC20 (Context Summarization): Context Summarization ---
+2025-05-11 04:59:47,976 - TestRunner - INFO - TC20_CLEANUP: Project 'TestProj1_TC20_Summary' not found in F:\COD\orchestrator_prime\app_data\projects.json, no removal needed.
+2025-05-11 04:59:47,976 - TestRunner - INFO - Terminating process (PID: 5532)...
+2025-05-11 04:59:47,977 - TestRunner - INFO - Process terminated with code: 1
+2025-05-11 04:59:47,978 - TestRunner - INFO - Starting main.py process...
+2025-05-11 04:59:47,979 - TestRunner - INFO - Running main.py from CWD: F:\COD\orchestrator_prime
+2025-05-11 04:59:47,986 - TestRunner - INFO - Process started (PID: 12644). Waiting for initial prompt...
+2025-05-11 04:59:49,701 - TestRunner - INFO - Captured stderr during read_until_prompt (for 'OP >'):
+--- BEGIN STDERR ---
+DEBUG: main.py script started.
+DEBUG main.py: After os, traceback, logging imports
+DEBUG Engine: SUCCESSFULLY imported gemini_comms_mocks at top level.
+DEBUG main.py: After engine import
+DEBUG main.py: After persistence import
+DEBUG main.py: After models import
+DEBUG main.py: Logging configured.
+DEBUG main.py: __main__ block entered
+DEBUG main.py: Before ensure_app_data_scaffolding() call
+DEBUG main.py: Inside ensure_app_data_scaffolding - Start
+DEBUG main.py: Inside ensure_app_data_scaffolding - End
+DEBUG main.py: After ensure_app_data_scaffolding() call
+2025-05-11 04:59:48,189 - orchestrator_prime - INFO - main.py:431 - Orchestrator Prime starting...
+DEBUG main.py: Logger 'Orchestrator Prime starting...' sent.
+DEBUG main.py: Before OrchestrationEngine() instantiation
+DEBUG Engine.__init__: Start
+2025-05-11 04:59:48,189 - orchestrator_prime - INFO - engine.py:66 - OrchestrationEngine initializing...
+DEBUG Engine.__init__: Before ConfigManager()
+DEBUG Engine.__init__: After ConfigManager()
+2025-05-11 04:59:48,191 - orchestrator_prime - INFO - engine.py:1016 - Attempting to load REAL Gemini client from gemini_comms_real...
+2025-05-11 04:59:49,701 - orchestrator_prime - WARNING - config_manager.py:83 - API Key is set to placeholder 'YOUR_API_KEY_HERE' in config.ini
+API Key is a placeholder ('YOUR_API_KEY_HERE') in config.ini. Gemini live mode will not function. Mocking should be used for tests requiring Gemini interaction.
+2025-05-11 04:59:49,701 - orchestrator_prime - INFO - engine.py:1030 - Successfully loaded REAL GeminiCommunicator from gemini_comms_real. Client type: <class 'gemini_comms_real.GeminiCommunicator'>
+2025-05-11 04:59:49,701 - orchestrator_prime - INFO - engine.py:82 - OrchestrationEngine initialized.
+DEBUG Engine.__init__: End
+DEBUG main.py: After OrchestrationEngine() instantiation
+DEBUG main.py: Before run_terminal_interface() call
+--- END STDERR ---
+2025-05-11 04:59:49,701 - TestRunner - INFO - SEND: project add
+2025-05-11 04:59:50,002 - TestRunner - INFO - SEND: TestProj1_TC20_Summary
+2025-05-11 04:59:50,303 - TestRunner - INFO - SEND: F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC20_Summary
+2025-05-11 04:59:50,604 - TestRunner - INFO - SEND: Goal for TC20 context summarization test.
+2025-05-11 04:59:50,905 - TestRunner - INFO - Captured stderr during read_until_prompt (for 'OP >'):
+--- BEGIN STDERR ---
+2025-05-11 04:59:50,604 - orchestrator_prime - INFO - persistence.py:239 - Assigned new ID 0627f9e6-6c88-4173-8ae1-9904da1ec2e3 to project 'TestProj1_TC20_Summary' during add.
+2025-05-11 04:59:50,605 - orchestrator_prime - INFO - persistence.py:101 - Saved 1 projects to app_data\projects.json
+--- END STDERR ---
+2025-05-11 04:59:50,905 - TestRunner - INFO - SEND: project select TestProj1_TC20_Summary
+2025-05-11 04:59:51,206 - TestRunner - INFO - Captured stderr during read_until_prompt (for 'OP (Project: TestProj1_TC20_Summary) >'):
+--- BEGIN STDERR ---
+2025-05-11 04:59:50,605 - orchestrator_prime - INFO - persistence.py:246 - Successfully added and saved project: TestProj1_TC20_Summary (ID: 0627f9e6-6c88-4173-8ae1-9904da1ec2e3)
+2025-05-11 04:59:50,905 - orchestrator_prime - INFO - engine.py:155 - Attempting to set active project to: TestProj1_TC20_Summary
+--- END STDERR ---
+2025-05-11 04:59:51,206 - TestRunner - INFO - Context Summarization - Phase 1: Building long conversation history.
+2025-05-11 04:59:51,206 - TestRunner - INFO - SEND: _apply_mock STANDARD_INSTRUCTION {"instruction": "Turn 1: Initial instruction after goal."}
+2025-05-11 04:59:51,506 - TestRunner - INFO - Captured stderr during read_until_prompt (for 'OP (Project: TestProj1_TC20_Summary) >'):
+--- BEGIN STDERR ---
+2025-05-11 04:59:50,905 - orchestrator_prime - INFO - engine.py:122 - Engine state changed from IDLE to LOADING_PROJECT - Detail: Loading project: TestProj1_TC20_Summary...
+2025-05-11 04:59:50,916 - orchestrator_prime - INFO - engine.py:171 - Setting active project to: TestProj1_TC20_Summary
+2025-05-11 04:59:50,916 - orchestrator_prime - INFO - persistence.py:120 - State file not found for project 'TestProj1_TC20_Summary' at F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC20_Summary\.orchestrator_state\state.json. Returning None (new state will be created by engine if needed).
+2025-05-11 04:59:50,916 - orchestrator_prime - INFO - engine.py:207 - No existing project state for TestProj1_TC20_Summary. Creating new state.
+2025-05-11 04:59:50,917 - orchestrator_prime - INFO - engine.py:236 - Project 'TestProj1_TC20_Summary' loaded. Its state.json specified status: IDLE
+2025-05-11 04:59:50,917 - orchestrator_prime - INFO - engine.py:246 - Project loaded with state IDLE. Transitioning to PROJECT_SELECTED for a clean start.
+2025-05-11 04:59:50,917 - orchestrator_prime - INFO - engine.py:122 - Engine state changed from LOADING_PROJECT to PROJECT_SELECTED
+2025-05-11 04:59:50,918 - orchestrator_prime - INFO - persistence.py:50 - Created project state directory: F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC20_Summary\.orchestrator_state
+2025-05-11 04:59:50,919 - orchestrator_prime - INFO - persistence.py:187 - Successfully saved project state for 'TestProj1_TC20_Summary' (Status: PROJECT_SELECTED)
+2025-05-11 04:59:50,919 - orchestrator_prime - INFO - persistence.py:187 - Successfully saved project state for 'TestProj1_TC20_Summary' (Status: PROJECT_SELECTED)
+2025-05-11 04:59:50,920 - orchestrator_prime - INFO - engine.py:271 - Active project successfully set. Project: 'TestProj1_TC20_Summary', Engine state: 'PROJECT_SELECTED'
+--- END STDERR ---
+2025-05-11 04:59:51,507 - TestRunner - INFO - SEND: goal Goal for TC20 context summarization test.
+2025-05-11 05:00:02,880 - TestRunner - ERROR - Context Summarization FAILED with exception: P1: Instruction file F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC20_Summary\dev_instructions\next_step.txt not created within 10s. OP Log Tail:
+al instruction for task: 'Goal for TC20 context summarization test....'
+2025-05-11 04:59:51,510 - orchestrator_prime - DEBUG - engine.py:676 - Generating initial structure overview for path: F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC20_Summary
+2025-05-11 04:59:51,511 - orchestrator_prime - DEBUG - engine.py:712 - Generated structure overview: Initial project structure overview (max 10 files, 10 dirs, excluding ['.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode']): ["Top-level directories: ['.orchestrator_state', 'dev_instructions', 'dev_logs']"].
+2025-05-11 04:59:51,512 - orchestrator_prime - INFO - engine.py:723 - THREAD 8280: Calling live Gemini API with history length 1, summary length 0
+2025-05-11 04:59:51,562 - orchestrator_prime - INFO - engine.py:652 - Response received from Gemini queue: SUCCESS
+2025-05-11 04:59:51,562 - orchestrator_prime - CRITICAL - engine.py:746 - PGR_CRITICAL_TRACE: ENTERED _process_gemini_response. ALIVE AND WELL.
+Traceback (most recent call last):
+  File "F:\COD\orchestrator_prime\test_terminal_app.py", line 699, in tc20_context_summarization
+    raise Exception(f"P1: Instruction file {instruction_file_path_tc20} not created within {max_wait_file_secs}s. OP Log Tail:\n{op_log_content}")
+Exception: P1: Instruction file F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC20_Summary\dev_instructions\next_step.txt not created within 10s. OP Log Tail:
+al instruction for task: 'Goal for TC20 context summarization test....'
+2025-05-11 04:59:51,510 - orchestrator_prime - DEBUG - engine.py:676 - Generating initial structure overview for path: F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC20_Summary
+2025-05-11 04:59:51,511 - orchestrator_prime - DEBUG - engine.py:712 - Generated structure overview: Initial project structure overview (max 10 files, 10 dirs, excluding ['.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode']): ["Top-level directories: ['.orchestrator_state', 'dev_instructions', 'dev_logs']"].
+2025-05-11 04:59:51,512 - orchestrator_prime - INFO - engine.py:723 - THREAD 8280: Calling live Gemini API with history length 1, summary length 0
+2025-05-11 04:59:51,562 - orchestrator_prime - INFO - engine.py:652 - Response received from Gemini queue: SUCCESS
+2025-05-11 04:59:51,562 - orchestrator_prime - CRITICAL - engine.py:746 - PGR_CRITICAL_TRACE: ENTERED _process_gemini_response. ALIVE AND WELL.
+
+2025-05-11 05:00:02,892 - TestRunner - INFO - SEND: _reload_gemini_client
+2025-05-11 05:00:03,211 - TestRunner - INFO - Captured stderr during read_until_prompt (for '>'):
+--- BEGIN STDERR ---
+2025-05-11 04:59:50,920 - orchestrator_prime - INFO - engine.py:275 - Summarization interval for project 'TestProj1_TC20_Summary' set to 2 turns.
+2025-05-11 04:59:51,206 - orchestrator_prime - INFO - engine.py:1048 - Attempting to apply MOCK Gemini communicator of type: 'STANDARD_INSTRUCTION' with details: {'instruction': 'Turn 1: Initial instruction after goal.'}
+--- END STDERR ---
+2025-05-11 05:00:03,214 - TestRunner - ERROR - --- Test Case 20: Context Summarization FAILED --- (Details: Context Summarization initial state.; P0: Project TestProj1_TC20_Summary added.; P0: Project TestProj1_TC20_Summary selected.; Exception: P1: Instruction file F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC20_Summary\dev_instructions\next_step.txt not created within 10s. OP Log Tail:
+al instruction for task: 'Goal for TC20 context summarization test....'
+2025-05-11 04:59:51,510 - orchestrator_prime - DEBUG - engine.py:676 - Generating initial structure overview for path: F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC20_Summary
+2025-05-11 04:59:51,511 - orchestrator_prime - DEBUG - engine.py:712 - Generated structure overview: Initial project structure overview (max 10 files, 10 dirs, excluding ['.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode']): ["Top-level directories: ['.orchestrator_state', 'dev_instructions', 'dev_logs']"].
+2025-05-11 04:59:51,512 - orchestrator_prime - INFO - engine.py:723 - THREAD 8280: Calling live Gemini API with history length 1, summary length 0
+2025-05-11 04:59:51,562 - orchestrator_prime - INFO - engine.py:652 - Response received from Gemini queue: SUCCESS
+2025-05-11 04:59:51,562 - orchestrator_prime - CRITICAL - engine.py:746 - PGR_CRITICAL_TRACE: ENTERED _process_gemini_response. ALIVE AND WELL.
+)
+2025-05-11 05:00:03,215 - TestRunner - INFO - 
+--- Test Summary ---
+2025-05-11 05:00:03,215 - TestRunner - INFO -   TC1: PASS - Help Command - PASSED
+2025-05-11 05:00:03,215 - TestRunner - INFO -   TC2: PASS - Project List (Empty) - Cleared projects.json for clean state.; Project List (Empty) - Verified 'No projects found.' message.; Project List (Empty) - PASSED
+2025-05-11 05:00:03,215 - TestRunner - INFO -   TC3: PASS - Project Add (Success) - Project: TestProj1_TC3, Path: F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC3; Project add success message verified.; Project verified in projects.json.; Project Add (Success) - PASSED
+2025-05-11 05:00:03,215 - TestRunner - INFO -   TC4: PASS - Project Add (Invalid Path) - Project: TestProj1_TC4, Invalid Path: Z:\this\path\should\not\exist_TC4; Re-prompt for invalid workspace path verified.; Warning: 'Project addition cancelled.' message not found after sending cancel. Got: Invalid path. Workspace Root Path (must be an existing directory):
+; Project correctly not found in projects.json after cancel.; Project Add (Invalid Path) - PASSED
+2025-05-11 05:00:03,215 - TestRunner - INFO -   TC5: PASS - Project Add (Duplicate Name) - Proj Name: TestProj1_TC5_Dup, Path1: F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC5_Dup_1, Path2: F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC5_Dup_2; First instance added.; Duplicate name error verified.; Verified only one instance in projects.json.; Project Add (Duplicate Name) - PASSED
+2025-05-11 05:00:03,215 - TestRunner - INFO -   TC6: PASS - Project List (With Project) - Project: TestProj1_TC6_List; Created projects.json with 'TestProj1_TC6_List'.; Project list verified.; Project List (With Project) - PASSED
+2025-05-11 05:00:03,215 - TestRunner - INFO -   TC7: PASS - Project Select (Success) - Project: TestProj1_TC7_Select; Created projects.json with 'TestProj1_TC7_Select'.; Project select success message and prompt verified.; Status command confirmed active project.; Deselect messages ('--- Deselecting active project: TestProj1_TC7_Select ---' and '--- Active project cleared. ---') found in first read.; Status message 'Active Project: None' found in second read.; Verified all messages after project deselection and status check.; Project Select (Success) - PASSED
+2025-05-11 05:00:03,215 - TestRunner - INFO -   TC8: PASS - Project Select (Non-Existent) - Trying to select: ThisProjectDoesNotExist_TC8; Ensured projects.json is empty.; Non-existent project error verified by expect_output.; Project Select (Non-Existent) - PASSED
+2025-05-11 05:00:03,215 - TestRunner - INFO -   TC9: PASS - Status (No Project Selected) - Placeholder PASSED
+2025-05-11 05:00:03,215 - TestRunner - INFO -   TC10: PASS - Status (Project Selected, Idle) - Placeholder PASSED
+2025-05-11 05:00:03,215 - TestRunner - INFO -   TC11: PASS - Invalid Command - Placeholder PASSED
+2025-05-11 05:00:03,215 - TestRunner - INFO -   TC12: PASS - Start Task (Live Gemini - Short) - Placeholder PASSED
+2025-05-11 05:00:03,215 - TestRunner - INFO -   TC13: PASS - Multi-turn Conversation (Mocked) - Placeholder PASSED
+2025-05-11 05:00:03,215 - TestRunner - INFO -   TC14: PASS - Cursor Timeout Error Handling - Placeholder PASSED
+2025-05-11 05:00:03,215 - TestRunner - INFO -   TC15: PASS - Gemini API Auth Error (Mocked) - Placeholder PASSED
+2025-05-11 05:00:03,215 - TestRunner - INFO -   TC16: PASS - Gemini API Other Error (Mocked) - Placeholder PASSED
+2025-05-11 05:00:03,215 - TestRunner - INFO -   TC17: PASS - Stop Command During Task - Placeholder PASSED
+2025-05-11 05:00:03,216 - TestRunner - INFO -   TC18: PASS - Engine State Reset Logic - Placeholder PASSED
+2025-05-11 05:00:03,216 - TestRunner - INFO -   TC19: PASS - State Persistence (Stop/Restart) - Placeholder PASSED
+2025-05-11 05:00:03,216 - TestRunner - INFO -   TC20: FAIL - Context Summarization initial state.; P0: Project TestProj1_TC20_Summary added.; P0: Project TestProj1_TC20_Summary selected.; Exception: P1: Instruction file F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC20_Summary\dev_instructions\next_step.txt not created within 10s. OP Log Tail:
+al instruction for task: 'Goal for TC20 context summarization test....'
+2025-05-11 04:59:51,510 - orchestrator_prime - DEBUG - engine.py:676 - Generating initial structure overview for path: F:\COD\orchestrator_prime\temp_automated_tests\TestProj1_TC20_Summary
+2025-05-11 04:59:51,511 - orchestrator_prime - DEBUG - engine.py:712 - Generated structure overview: Initial project structure overview (max 10 files, 10 dirs, excluding ['.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode']): ["Top-level directories: ['.orchestrator_state', 'dev_instructions', 'dev_logs']"].
+2025-05-11 04:59:51,512 - orchestrator_prime - INFO - engine.py:723 - THREAD 8280: Calling live Gemini API with history length 1, summary length 0
+2025-05-11 04:59:51,562 - orchestrator_prime - INFO - engine.py:652 - Response received from Gemini queue: SUCCESS
+2025-05-11 04:59:51,562 - orchestrator_prime - CRITICAL - engine.py:746 - PGR_CRITICAL_TRACE: ENTERED _process_gemini_response. ALIVE AND WELL.
+
+2025-05-11 05:00:03,216 - TestRunner - INFO - PASSED: 19/20
+2025-05-11 05:00:03,216 - TestRunner - INFO - FAILED: 1/20
+2025-05-11 05:00:03,216 - TestRunner - INFO - Terminating process (PID: 12644)...
+2025-05-11 05:00:03,298 - TestRunner - INFO - Process terminated with code: 1

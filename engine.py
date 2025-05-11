@@ -18,6 +18,17 @@ from models import Project, ProjectState, Turn
 from persistence import load_project_state, save_project_state, get_project_by_id, load_projects, PersistenceError
 # Removed: import gemini_comms
 from config_manager import ConfigManager
+# Try to import the mock factory, but don't fail if it's not there (e.g. deployment)
+try:
+    from gemini_comms_mocks import get_mock_communicator, MockGeminiCommunicatorBase
+    print("DEBUG Engine: SUCCESSFULLY imported gemini_comms_mocks at top level.", file=sys.stderr)
+except ImportError as e_import_mock: # Catch the specific error
+    get_mock_communicator = None
+    MockGeminiCommunicatorBase = None # type: ignore # So type checker doesn't complain if it's None
+    print("DEBUG Engine: Initial import of gemini_comms_mocks FAILED! VERY IMPORTANT DIAGNOSTIC!", file=sys.stderr)
+    print(f"DEBUG Engine: Specific Error: {e_import_mock}", file=sys.stderr)
+    print(f"DEBUG Engine: sys.path at failure: {sys.path}", file=sys.stderr)
+    print(f"DEBUG Engine: CWD at failure: {os.getcwd()}", file=sys.stderr)
 
 # Get the logger instance (assuming it's configured in main.py or another central place)
 # If not, this will create a default logger. For best practice, ensure it's configured.
@@ -40,6 +51,7 @@ class EngineState(Enum):
     RUNNING_WAITING_LOG = auto()
     RUNNING_PROCESSING_LOG = auto()
     RUNNING_CALLING_GEMINI = auto()
+    SUMMARIZING_CONTEXT = auto()
     PAUSED_WAITING_USER_INPUT = auto()
     TASK_COMPLETE = auto()
     ERROR = auto()
@@ -59,12 +71,13 @@ class OrchestrationEngine:
         self.gemini_client = None 
         self.config_manager: Optional[ConfigManager] = None
         self.persistence_manager = None 
+        self._active_mock_type: Optional[str] = None # Track if a mock is active
         try:
             print("DEBUG Engine.__init__: Before ConfigManager()", file=sys.stderr) # DEBUG
             self.config_manager = ConfigManager()
             print("DEBUG Engine.__init__: After ConfigManager()", file=sys.stderr) # DEBUG
             
-            self._load_gemini_comms_and_client() # Initial load
+            self._load_real_gemini_client() # Initial load
 
             logger.info("OrchestrationEngine initialized.")
             print("DEBUG Engine.__init__: End", file=sys.stderr) # DEBUG
@@ -83,6 +96,7 @@ class OrchestrationEngine:
         self.dev_instructions_dir: str = ""
         self.last_error_message: Optional[str] = None if not hasattr(self, 'last_error_message') else self.last_error_message
         self.pending_user_question: Optional[str] = None
+        self.status_message_for_display: Optional[str] = None
         self._last_critical_error: Optional[str] = None if not hasattr(self, '_last_critical_error') else self._last_critical_error
         self._cursor_timeout_timer: Optional[threading.Timer] = None
         self._shutdown_complete = False
@@ -123,6 +137,21 @@ class OrchestrationEngine:
                 self._set_state(EngineState.ERROR, self._last_critical_error)
                 return False
 
+            if project_name is None:
+                logger.info("ENGINE_TRACE: set_active_project received None. Attempting to clear active project.")
+                logger.info("ENGINE_TRACE: Calling stop_file_watcher.")
+                self.stop_file_watcher()
+                logger.info("ENGINE_TRACE: Returned from stop_file_watcher.")
+                logger.info("ENGINE_TRACE: Calling _cancel_cursor_timeout.")
+                self._cancel_cursor_timeout()
+                logger.info("ENGINE_TRACE: Returned from _cancel_cursor_timeout.")
+                self.current_project = None
+                self.current_project_state = None
+                logger.info("ENGINE_TRACE: Calling _set_state to IDLE.")
+                self._set_state(EngineState.IDLE, "Active project cleared.")
+                logger.info("ENGINE_TRACE: Active project cleared. Engine is IDLE.")
+                return True
+
             logger.info(f"Attempting to set active project to: {project_name}")
             self._set_state(EngineState.LOADING_PROJECT, f"Loading project: {project_name}...")
             
@@ -134,7 +163,7 @@ class OrchestrationEngine:
                     break
             
             if not project_to_load:
-                self._set_state(EngineState.ERROR, f"Project '{project_name}' not found.")
+                self._set_state(EngineState.IDLE, f"Project '{project_name}' not found.")
                 self.current_project = None
                 return False
 
@@ -152,21 +181,25 @@ class OrchestrationEngine:
             if loaded_state:
                 self.current_project_state = loaded_state
                 logger.debug(f"Loaded project state for {self.current_project.name}. Raw status from file: '{self.current_project_state.current_status}'.")
-                # Reset non-terminal error states or intermediate states from previous sessions
                 current_status_from_file = self.current_project_state.current_status
                 try:
                     loaded_enum_state = EngineState[current_status_from_file]
-                    if loaded_enum_state.name.startswith("ERROR") or \
-                       loaded_enum_state in [EngineState.RUNNING_WAITING_INITIAL_GEMINI, 
+                    if loaded_enum_state.name.startswith("ERROR"):
+                        logger.warning(f"Project {self.current_project.name} loaded in an error state ('{current_status_from_file}'). Resetting to PROJECT_SELECTED.")
+                        print(f"NOTICE: Project '{self.current_project.name}' was loaded in an error state ({current_status_from_file}). Resetting to PROJECT_SELECTED. Please re-initiate task if needed.")
+                        self.current_project_state.current_status = EngineState.PROJECT_SELECTED.name
+                        self.last_error_message = None
+                        self._set_state(EngineState.PROJECT_SELECTED, f"Recovered from error state: {current_status_from_file}")
+                    elif loaded_enum_state in [EngineState.RUNNING_WAITING_INITIAL_GEMINI, 
                                             EngineState.RUNNING_WAITING_LOG, 
                                             EngineState.RUNNING_PROCESSING_LOG, 
                                             EngineState.RUNNING_CALLING_GEMINI]:
-                        logger.warning(f"Project {self.current_project.name} loaded with a previous transient or error status ('{current_status_from_file}'). Resetting to PROJECT_SELECTED.")
+                        logger.warning(f"Project {self.current_project.name} loaded with a previous transient status ('{current_status_from_file}'). Resetting to PROJECT_SELECTED.")
                         self.current_project_state.current_status = EngineState.PROJECT_SELECTED.name
+                        self._set_state(EngineState.PROJECT_SELECTED)
                     elif loaded_enum_state == EngineState.PAUSED_WAITING_USER_INPUT:
-                        # This state is okay to load into, will be handled further down.
-                        pass 
-                except KeyError: # Not a valid EngineState name
+                        pass
+                except KeyError:
                     logger.warning(f"Project {self.current_project.name} loaded with an invalid status string ('{current_status_from_file}'). Resetting to PROJECT_SELECTED.")
                     self.current_project_state.current_status = EngineState.PROJECT_SELECTED.name
 
@@ -213,8 +246,21 @@ class OrchestrationEngine:
                     logger.info(f"Project loaded with state {final_state_to_set.name}. Transitioning to PROJECT_SELECTED for a clean start.")
                     self._set_state(EngineState.PROJECT_SELECTED)
                     self.current_project_state.current_status = EngineState.PROJECT_SELECTED.name # Persist this clean state
-                else: # Preserve ERROR state if loaded
-                    self._set_state(final_state_to_set, "Project loaded into an existing ERROR state.")
+                else: # Was: Preserve ERROR state if loaded. NOW: Handle loaded ERROR state by resetting.
+                    loaded_error_state_name = final_state_to_set.name
+                    logger.warning(f"Project '{self.current_project.name}' was loaded in an error state: {loaded_error_state_name}.")
+                    # Transition to IDLE to allow selection or new task.
+                    # PROJECT_SELECTED might be too presumptuous if the project data itself had an issue, though less likely here.
+                    # IDLE is a safer neutral state post-error-load.
+                    self._set_state(EngineState.IDLE)
+                    self.current_project_state.current_status = EngineState.IDLE.name # Persist this reset
+                    
+                    # Update main.py's display via engine attributes
+                    self.status_message_for_display = f"NOTICE: Project '{self.current_project.name}' was loaded in state {loaded_error_state_name}. Reset to IDLE."
+                    self.last_error_message = None # Clear the specific error message that led to the saved ERROR state.
+                    # The general notice is in status_message_for_display
+
+                    logger.info(f"Project '{self.current_project.name}' was in {loaded_error_state_name}, reset to IDLE. User notified.")
 
             except KeyError: 
                  logger.error(f"Invalid state name '{final_state_to_set_name}' in project state for {self.current_project.name}. Resetting to PROJECT_SELECTED.", exc_info=True)
@@ -305,21 +351,34 @@ class OrchestrationEngine:
             logger.debug("stop_file_watcher called but no observer instance was present.")
 
     def _write_instruction_file(self, instruction: str):
+        logger.debug(f"_write_instruction_file: Attempting to write instruction. Current project: {self.current_project.name if self.current_project else 'None'}, Instructions dir: {self.dev_instructions_dir}") # DEBUG
         if not self.current_project or not self.dev_instructions_dir:
+            logger.error("_write_instruction_file: No active project or instructions directory.") # DEBUG
             self._set_state(EngineState.ERROR, "Cannot write instruction: No active project or instructions directory.")
             return
         if not self.current_project_state:
+             logger.error("_write_instruction_file: No project state available.") # DEBUG
              self._set_state(EngineState.ERROR, "Cannot write instruction: No project state available.")
              return
 
         try:
             filename = self.config_manager.get_next_step_filename() # e.g., next_step.txt
             instruction_file_path = os.path.join(self.dev_instructions_dir, filename)
-            self._write_to_file(self.dev_instructions_dir, filename, instruction)
+            logger.debug(f"_write_instruction_file: Target path: {instruction_file_path}") # DEBUG
             
+            with open(instruction_file_path, 'w', encoding='utf-8') as f:
+                f.write(instruction)
+                f.flush() # Explicit flush
+                # os.fsync(f.fileno()) # This might be too much, but an option for extreme cases
+            # 'with open' handles close automatically
+            logger.info(f"Instruction written to: {instruction_file_path}") # Moved log after write and close
+
+            # Brief pause to ensure file system has time to process the write, especially for tests
+            time.sleep(0.1) # Brief sleep after file is closed
+
             self.current_project_state.last_instruction_sent = instruction
             # History for Gemini's own instruction is added in _process_gemini_response before this call.
-            logger.info(f"Instruction written to: {instruction_file_path}")
+            # logger.info(f"Instruction written to: {instruction_file_path}") # Original position
             self._set_state(EngineState.RUNNING_WAITING_LOG, f"Instruction written. Waiting for Cursor log ('{self.config_manager.get_cursor_output_filename()}').")
             self._start_cursor_timeout()
             if not self.file_observer or not self.file_observer.is_alive(): # Start watcher if not already running
@@ -681,9 +740,23 @@ class OrchestrationEngine:
             q.put({"status": "ERROR", "content": f"Error in Gemini API call thread: {e}"})
 
     def _process_gemini_response(self, response_data: Dict[str, Any]):
+        # VERY FIRST LINE LOGGING
+        print("DEBUG_PGR: ENTERED _process_gemini_response", file=sys.stderr, flush=True)
+        try:
+            logger.critical("PGR_CRITICAL_TRACE: ENTERED _process_gemini_response. ALIVE AND WELL.")
+        except Exception as e_log_crit:
+            print(f"DEBUG_PGR: FAILED TO LOG CRITICAL ENTRY: {e_log_crit}", file=sys.stderr, flush=True)
+
         with self._engine_lock:
-            if self._shutdown_complete or self.state not in [EngineState.RUNNING_CALLING_GEMINI, EngineState.RUNNING_WAITING_INITIAL_GEMINI]:
-                logger.warning(f"Engine was stopped, shut down, or in an unexpected state ({self.state.name}) while Gemini response was being processed. Ignoring response: {str(response_data)[:100]}...")
+            # logger.info(f"PGR_TRACE: Entered _process_gemini_response. Current engine state: {self.state.name}") # REPLACED by print and critical
+            logger.info(f"PGR_TRACE: Current engine state (after lock): {self.state.name}") # ADDED
+            logger.info(f"PGR_TRACE: Received response_data keys: {list(response_data.keys()) if response_data else 'None'}")
+            if response_data:
+                logger.info(f"PGR_TRACE: response_data content: instruction='{response_data.get('instruction', 'N/A')[:50]}...', next_step_action='{response_data.get('next_step_action', 'N/A')}', error='{response_data.get('error', 'N/A')}'")
+
+            if self._shutdown_complete or self.state not in [EngineState.RUNNING_CALLING_GEMINI, EngineState.RUNNING_WAITING_INITIAL_GEMINI, EngineState.RUNNING_PROCESSING_LOG]:
+                logger.warning(f"PGR_TRACE: Engine was stopped, shut down, or in an unexpected state ({self.state.name}) while Gemini response was being processed. Ignoring response.")
+                logger.warning(f"PGR_TRACE: Details: _shutdown_complete={self._shutdown_complete}, state={self.state.name}, allowed_states=[RUNNING_CALLING_GEMINI, RUNNING_WAITING_INITIAL_GEMINI, RUNNING_PROCESSING_LOG]")
                 return
 
             instruction = response_data.get("instruction")
@@ -705,6 +778,7 @@ class OrchestrationEngine:
                 self._set_state(EngineState.TASK_COMPLETE, completion_message)
                 self.stop_file_watcher() 
             elif next_step == "WRITE_TO_FILE" and instruction:
+                logger.debug(f"_process_gemini_response: Condition MET for WRITE_TO_FILE. Instruction: {instruction[:50]}...")
                 self._add_to_history("assistant", gemini_message_for_history, needs_user_input=False)
                 logger.info(f"Gemini provided instruction. Writing to file... Instruction (first 100 chars): {instruction[:100]}...")
                 self._write_instruction_file(instruction)
@@ -804,11 +878,40 @@ class OrchestrationEngine:
                 logger.debug(f"Cursor timeout not started. Engine state is {self.state.name}, not RUNNING_WAITING_LOG.")
 
     def _cancel_cursor_timeout(self):
-        with self._engine_lock:
-            if self._cursor_timeout_timer and self._cursor_timeout_timer.is_alive():
-                self._cursor_timeout_timer.cancel()
-                logger.info("Cursor log timeout cancelled.")
+        logger.info("ENGINE_TRACE_INTERNAL: _cancel_cursor_timeout entered (full logic).")
+        if self._cursor_timeout_timer:
+            logger.info("ENGINE_TRACE_INTERNAL: Timer object exists. Cancelling existing cursor activity timer.")
+            self._cursor_timeout_timer.cancel() # Cancel first
+            
+            # Check if join is needed and attempt it
+            # A timer only becomes alive after start() is called.
+            # If cancel() is called before start(), it just sets an internal flag and is_alive() would be false.
+            # If cancel() is called after start() but before the function runs, is_alive() is true, join is needed.
+            # If cancel() is called while the function is running, is_alive() is true, join is needed.
+            # If cancel() is called after the function has run, is_alive() is false.
+            try:
+                # We can only join a timer that has been started.
+                # Calling .join() on a timer that hasn't been .start()-ed raises RuntimeError.
+                # However, self._cursor_timeout_timer.is_alive() implies it has been started.
+                if self._cursor_timeout_timer.is_alive(): 
+                    logger.info("ENGINE_TRACE_INTERNAL: Timer was alive, waiting for _cursor_timeout_timer thread to finish...")
+                    self._cursor_timeout_timer.join(timeout=2) # Wait for up to 2 seconds
+                    if self._cursor_timeout_timer.is_alive():
+                        logger.warning("ENGINE_TRACE_INTERNAL: _cursor_timeout_timer thread did not finish after join(2).")
+                    else:
+                        logger.info("ENGINE_TRACE_INTERNAL: _cursor_timeout_timer thread finished after join.")
+                else:
+                    logger.info("ENGINE_TRACE_INTERNAL: Timer was not alive (already finished, or cancelled before start, or never started).")
+            except RuntimeError as e:
+                # This might happen if join() is called on a timer that was never start()-ed.
+                # This shouldn't occur if is_alive() was true, but as a safeguard.
+                logger.warning(f"ENGINE_TRACE_INTERNAL: RuntimeError during timer join: {e}. This might be okay if timer was cancelled before start.")
+            
             self._cursor_timeout_timer = None
+            logger.info("ENGINE_TRACE_INTERNAL: Timer object set to None.")
+        else:
+            logger.info("ENGINE_TRACE_INTERNAL: _cancel_cursor_timeout called, timer was already None.")
+        logger.info("ENGINE_TRACE_INTERNAL: _cancel_cursor_timeout exiting (full logic).")
 
     def _handle_cursor_timeout(self):
         with self._engine_lock:
@@ -908,101 +1011,98 @@ class OrchestrationEngine:
             self.state = EngineState.IDLE # Final engine state after shutdown process
             logger.info(f"OrchestrationEngine shutdown complete. Final engine state: {self.state.name}.")
 
-    def _load_gemini_comms_and_client(self):
-        logger.info("Attempting to load gemini_comms module and initialize client...")
-        print("DEBUG Engine._load_gemini_comms_and_client: Start", file=sys.stderr)
-        
-        importlib.invalidate_caches()
-        logger.debug("Called importlib.invalidate_caches()")
-        print("DEBUG Engine._load_gemini_comms_and_client: Called importlib.invalidate_caches()", file=sys.stderr)
-
-        module_to_load_name = None
-        mock_comms_path = Path("gemini_comms_mock.py")
-        real_comms_module_name = "gemini_comms_real" # The .py is assumed by importlib
-
-        if mock_comms_path.exists() and mock_comms_path.is_file():
-            logger.info(f"Mock comms file '{mock_comms_path}' exists. Attempting to load it.")
-            print(f"DEBUG Engine._load_gemini_comms_and_client: Mock file '{mock_comms_path}' exists.", file=sys.stderr)
-            module_to_load_name = "gemini_comms_mock" 
-        else:
-            logger.info(f"Mock comms file '{mock_comms_path}' does not exist. Attempting to load real comms module '{real_comms_module_name}'.")
-            print(f"DEBUG Engine._load_gemini_comms_and_client: Mock file '{mock_comms_path}' does NOT exist. Using real: {real_comms_module_name}", file=sys.stderr)
-            module_to_load_name = real_comms_module_name
-        
-        if module_to_load_name in sys.modules:
-            del sys.modules[module_to_load_name]
-            logger.info(f"Removed '{module_to_load_name}' from sys.modules before loading.")
-            print(f"DEBUG Engine._load_gemini_comms_and_client: Removed '{module_to_load_name}' from sys.modules.", file=sys.stderr)
-
+    def _load_real_gemini_client(self):
+        """Loads the real Gemini client from gemini_comms_real.py."""
+        logger.info("Attempting to load REAL Gemini client from gemini_comms_real...")
+        module_name = "gemini_comms_real"
         try:
-            # Dynamically import the chosen module
-            self.gemini_comms_module = importlib.import_module(module_to_load_name)
-            logger.info(f"Successfully loaded module: '{module_to_load_name}' from {getattr(self.gemini_comms_module, '__file__', 'N/A')}")
-            print(f"DEBUG Engine._load_gemini_comms_and_client: Loaded module '{module_to_load_name}' from {getattr(self.gemini_comms_module, '__file__', 'N/A')}", file=sys.stderr)
-
-            if hasattr(self.gemini_comms_module, 'GeminiCommunicator'):
-                self.gemini_client = self.gemini_comms_module.GeminiCommunicator()
-                client_type = type(self.gemini_client).__name__
-                client_module = type(self.gemini_client).__module__
-                logger.info(f"GeminiCommunicator instance created. Type: {client_module}.{client_type}")
-                print(f"DEBUG Engine._load_gemini_comms_and_client: GeminiCommunicator type: {client_module}.{client_type}", file=sys.stderr)
-                
-                # More robust check for mock: check module name or a specific attribute unique to mock
-                if module_to_load_name == "gemini_comms_mock" or hasattr(self.gemini_client, 'mock_type'):
-                    mock_type_attr = getattr(self.gemini_client, 'mock_type', 'N/A')
-                    logger.info(f"Loaded GeminiCommunicator is a MOCK from '{module_to_load_name}'. Mock type attribute: {mock_type_attr}")
-                    print(f"DEBUG Engine._load_gemini_comms_and_client: Detected MOCK client. Module: '{module_to_load_name}', Mock type attr: {mock_type_attr}", file=sys.stderr)
-                else:
-                    logger.info(f"Loaded GeminiCommunicator is REAL from '{module_to_load_name}'.")
-                    print(f"DEBUG Engine._load_gemini_comms_and_client: Detected REAL client from '{module_to_load_name}'.", file=sys.stderr)
-            else:
-                logger.error(f"Module '{module_to_load_name}' loaded, but GeminiCommunicator class not found.")
-                print(f"DEBUG Engine._load_gemini_comms_and_client: GeminiCommunicator class not found in module '{module_to_load_name}'.", file=sys.stderr)
-                self.gemini_client = None
-        except ImportError as ie:
-            logger.error(f"ImportError loading module '{module_to_load_name}': {ie}. This might be critical if it's the real module.", exc_info=True)
-            print(f"DEBUG Engine._load_gemini_comms_and_client: ImportError for '{module_to_load_name}': {ie}", file=sys.stderr)
-            # If mock fails to load, we might want to try loading real one as a fallback, but current logic loads real if mock is absent.
-            # If real one fails here, it's a problem.
-            self.gemini_comms_module = None
-            self.gemini_client = None
-        except Exception as e:
-            logger.error(f"Error during dynamic import or instantiation of GeminiCommunicator from '{module_to_load_name}': {e}", exc_info=True)
-            print(f"DEBUG Engine._load_gemini_comms_and_client: Exception for '{module_to_load_name}': {e}", file=sys.stderr)
-            self.gemini_comms_module = None
-            self.gemini_client = None
-        
-        if not self.gemini_client:
-            logger.warning("Gemini client (self.gemini_client) is None after _load_gemini_comms_and_client attempt.")
-            print("DEBUG Engine._load_gemini_comms_and_client: self.gemini_client is None at end of method.", file=sys.stderr)
-
-    def reinitialize_gemini_client(self):
-        logger.info("Attempting to re-initialize Gemini client by reloading comms module logic...")
-        print("DEBUG Engine.reinitialize_gemini_client: Start", file=sys.stderr)
-        
-        self.gemini_comms_module = None # Reset the stored module object
-        self.gemini_client = None # Reset the client
-
-        self._load_gemini_comms_and_client() # Perform a fresh load
-        
-        if self.gemini_client:
-            logger.info("Gemini client re-initialization attempt complete. Client is now set.")
-            print("DEBUG Engine.reinitialize_gemini_client: Client re-initialization complete, client is set.", file=sys.stderr)
+            # Ensure fresh import for reliability, especially if module was manipulated
+            if module_name in sys.modules:
+                logger.debug(f"Removing existing '{module_name}' from sys.modules for fresh import.")
+                del sys.modules[module_name]
             
-            # Check if the re-initialized client is mock or real
-            client_module_name = getattr(getattr(self.gemini_client, '__module__', None), 'split', lambda x: [''])('.')[-1]
-            if client_module_name == "gemini_comms_mock" or hasattr(self.gemini_client, 'mock_type'):
-                mock_type_attr = getattr(self.gemini_client, 'mock_type', 'N/A')
-                logger.info(f"Re-initialized GeminiCommunicator is a MOCK. Module: '{client_module_name}', Mock type attribute: {mock_type_attr}")
-                print(f"DEBUG Engine.reinitialize_gemini_client: Detected MOCK client. Module: '{client_module_name}', Mock type attr: {mock_type_attr}", file=sys.stderr)
+            # Attempt to import gemini_comms_real and its GeminiCommunicator class
+            gemini_comms_real_module = importlib.import_module(module_name)
+            RealGeminiCommunicator = getattr(gemini_comms_real_module, 'GeminiCommunicator')
+
+            self.gemini_client = RealGeminiCommunicator()
+            self._active_mock_type = None # Clear any mock type tracking
+            logger.info(f"Successfully loaded REAL GeminiCommunicator from {module_name}. Client type: {type(self.gemini_client)}")
+
+        except AttributeError:
+            logger.error(f"'GeminiCommunicator' class not found in {module_name}.", exc_info=True)
+            self._set_state(EngineState.ERROR, f"Real Gemini comms module class error.")
+            self.gemini_client = None # Ensure client is None if loading fails
+        except ImportError:
+            logger.error(f"Failed to import REAL Gemini client module: {module_name}", exc_info=True)
+            self._set_state(EngineState.ERROR, f"Real Gemini comms module import error.")
+            self.gemini_client = None # Ensure client is None if loading fails
+        except Exception as e:
+            logger.error(f"Unexpected error loading REAL Gemini client from {module_name}: {e}", exc_info=True)
+            self._set_state(EngineState.ERROR, f"Real Gemini comms module unknown error: {e}")
+            self.gemini_client = None # Ensure client is None on any other unhandled exception
+
+    def apply_mock_communicator(self, mock_type: str, details: Optional[Dict[str, Any]] = None) -> bool:
+        """Applies a mock Gemini communicator."""
+        with self._engine_lock:
+            logger.info(f"Attempting to apply MOCK Gemini communicator of type: '{mock_type}' with details: {details}")
+            
+            mock_module_name = "gemini_comms_mocks"
+            try:
+                # Dynamically import here to get the latest version of the mock file
+                if mock_module_name in sys.modules:
+                    logger.debug(f"Removing existing '{mock_module_name}' from sys.modules for fresh mock import.")
+                    del sys.modules[mock_module_name] # Ensure fresh import if mock file was just written/updated
+                
+                gemini_comms_mocks_module = importlib.import_module(mock_module_name)
+                get_mock_communicator_func = getattr(gemini_comms_mocks_module, 'get_mock_communicator')
+                MockGeminiCommunicatorBaseClass = getattr(gemini_comms_mocks_module, 'MockGeminiCommunicatorBase')
+
+                mock_instance = get_mock_communicator_func(
+                    mock_type,
+                    details
+                )
+
+                if isinstance(mock_instance, MockGeminiCommunicatorBaseClass):
+                    self.gemini_client = mock_instance
+                    self._active_mock_type = mock_type
+                    logger.info(f"Successfully applied MOCK Gemini communicator: '{mock_type}'. Current client: {type(self.gemini_client)}")
+                    return True
+                else:
+                    logger.error(f"Mock factory 'get_mock_communicator' returned unexpected type for '{mock_type}': {type(mock_instance)}. Expected a subclass of MockGeminiCommunicatorBase.")
+                    self._active_mock_type = None 
+                    self._load_real_gemini_client() # Revert to real client on error
+                    return False
+            except AttributeError: # Handles missing functions/classes in the mock module
+                logger.error(f"Attribute error while loading or using mock communicator from '{mock_module_name}'. Functions/classes might be missing.", exc_info=True)
+                self._active_mock_type = None
+                self._load_real_gemini_client()
+                self._set_state(EngineState.ERROR, f"Mocking system attribute error for '{mock_type}'.")
+                return False
+            except ImportError: # Handles if gemini_comms_mocks.py itself is not found
+                logger.error(f"Failed to import MOCK Gemini client module: '{mock_module_name}'. File might be missing.", exc_info=True)
+                self._active_mock_type = None
+                # Don't necessarily revert to real client here, as the intent was to mock. Error state is better.
+                self._set_state(EngineState.ERROR, f"Mocking system import error for '{mock_type}'.")
+                return False
+            except Exception as e:
+                logger.error(f"Error applying mock communicator '{mock_type}': {e}", exc_info=True)
+                self._active_mock_type = None 
+                self._load_real_gemini_client() # Revert to real client on other errors
+                self._set_state(EngineState.ERROR, f"Error applying mock '{mock_type}': {e}")
+                return False
+
+    def reinitialize_gemini_client(self) -> bool:
+        """Reinitializes to the REAL Gemini client, removing any mocks."""
+        with self._engine_lock:
+            logger.info("Re-initializing to REAL Gemini client (removing any active mocks)...")
+            self._load_real_gemini_client()
+            if self.gemini_client:
+                logger.info("Successfully reverted to REAL Gemini client.")
+                return True
             else:
-                logger.info(f"Re-initialized GeminiCommunicator is REAL from module '{client_module_name}'.")
-                print(f"DEBUG Engine.reinitialize_gemini_client: Detected REAL client from '{client_module_name}'.", file=sys.stderr)
-            return True
-        else:
-            logger.error("Gemini client is None after re-initialization attempt.")
-            print("DEBUG Engine.reinitialize_gemini_client: Client is None after re-initialization.", file=sys.stderr)
-            return False
+                logger.error("Failed to revert to REAL Gemini client. Engine may be in error state.")
+                return False
 
     def get_project_path(self):
         # This method seems unused and current_project might not have a direct 'path' attribute.
@@ -1013,6 +1113,10 @@ class OrchestrationEngine:
 
     def get_current_engine_state_name(self): # Renamed for clarity
         return self.state.name
+
+    def _get_timestamp(self) -> str:
+        """Generates a consistently formatted timestamp string."""
+        return datetime.now().isoformat(timespec='milliseconds')
 
 class LogFileCreatedHandler(FileSystemEventHandler): # type: ignore
     def __init__(self, engine: 'OrchestrationEngine'):

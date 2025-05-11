@@ -18,6 +18,10 @@ class PersistenceError(Exception):
     """Custom exception for persistence layer errors."""
     pass
 
+class DuplicateProjectError(PersistenceError): # New specific error
+    """Custom exception for trying to add a project with a duplicate name."""
+    pass
+
 def _ensure_app_data_dir_exists():
     if not os.path.exists(APP_DATA_DIR):
         try:
@@ -191,7 +195,8 @@ def save_project_state(project: Project, state: ProjectState):
 def add_project(project_details: Project) -> Optional[Project]: # Modified to take Project object
     if not isinstance(project_details, Project):
         logger.error(f"Invalid input to add_project. Expected Project object, got {type(project_details)}")
-        return None
+        # Instead of returning None, let's raise a TypeError for invalid input type
+        raise TypeError(f"Invalid input to add_project. Expected Project object, got {type(project_details)}")
 
     name = project_details.name
     workspace_root_path = project_details.workspace_root_path
@@ -200,28 +205,50 @@ def add_project(project_details: Project) -> Optional[Project]: # Modified to ta
     if not os.path.isabs(workspace_root_path):
         logger.warning(f"Project '{name}' workspace path '{workspace_root_path}' is not absolute. Resolving relative to current directory. Consider using absolute paths.")
         workspace_root_path = os.path.abspath(workspace_root_path)
+        # Update the project_details object if we resolved the path, ensures consistency
+        project_details.workspace_root_path = workspace_root_path 
         logger.info(f"Resolved workspace path for '{name}' to: {workspace_root_path}")
 
     try:
         projects = load_projects()
     except PersistenceError as e:
         logger.error(f"Cannot add project '{name}', failed to load existing projects: {e}", exc_info=True)
-        return None 
+        # Re-raise to indicate failure at a higher level
+        raise PersistenceError(f"Failed to load existing projects while trying to add '{name}'.") from e
 
     if any(p.name == name for p in projects):
-        logger.info(f"Project with name '{name}' already exists. Returning existing project.")
-        return next((p for p in projects if p.name == name), None)
+        err_msg = f"Project with name '{name}' already exists."
+        logger.error(err_msg) # Log as error, not info
+        raise DuplicateProjectError(err_msg) # Raise specific error
 
-    # Assign an ID if the input project doesn't have one
-    new_project = Project(name=name, workspace_root_path=workspace_root_path, overall_goal=overall_goal)
+    # Ensure project_details has an ID, if not, Project constructor will assign one.
+    # If project_details came with an ID (e.g., from a previous failed attempt or external source),
+    # we should check if that ID also clashes, though name is primary key here.
+    # For now, we rely on Project() to generate a new ID if project_details.id is None or not set.
+    
+    # Create a new Project instance from details to ensure it has a fresh ID if not provided,
+    # and that all fields are correctly initialized by the model.
+    # This also helps if project_details was a raw dict before type hinting enforcement.
+    # However, the signature now demands a Project object, so it should be fine.
+    # We re-use project_details as it's already a Project object.
+    # We ensure its path is updated if it was relative.
+    
+    new_project = project_details # It's already a Project object
+    if not new_project.id: # If by any chance ID was not set
+        new_project.id = str(uuid.uuid4())
+        logger.info(f"Assigned new ID {new_project.id} to project '{new_project.name}' during add.")
+
+
     projects.append(new_project)
     try:
         save_projects(projects)
-        print(f"Added project: {name}")
+        # Removed print(f"Added project: {name}") -> main.py should handle user feedback
+        logger.info(f"Successfully added and saved project: {name} (ID: {new_project.id})")
         return new_project
     except PersistenceError as e:
-        print(f"PERSISTENCE ERROR: Failed to save new project '{name}': {e}")
-        return None 
+        # Log the error, then re-raise it so main.py can inform the user.
+        logger.error(f"PERSISTENCE ERROR: Failed to save new project '{name}': {e}", exc_info=True)
+        raise PersistenceError(f"Failed to save new project '{name}'.") from e
 
 def get_project_by_id(project_id: str) -> Optional[Project]:
     projects = load_projects() 
