@@ -58,16 +58,18 @@ class ConfigManager:
         self.config['ENGINE_CONFIG'] = {
             'cursor_log_timeout_seconds': '300', # 5 minutes
             'log_file_read_delay_seconds': '0.5',
-            'watchdog_debounce_seconds': '2.0'
+            'watchdog_debounce_seconds': '2.0',
+            'summarization_interval': '10' # Correct section and key
         }
         self.config['SETTINGS'] = {
-            'summary_interval': '10' # Summarize every 10 turns
+            # 'summary_interval': '10' # Removed from here
         }
         self.config['STRUCTURE_ANALYSIS'] = {
              'max_files': '10',
              'max_dirs': '10',
              'excluded_patterns': '.git,__pycache__,node_modules,.venv,venv,.idea,.vscode' # Comma-separated
         }
+        logger.info("Default config created with summarization_interval in ENGINE_CONFIG section.")
         try:
             with open(self.config_file, 'w') as f:
                 self.config.write(f)
@@ -133,7 +135,7 @@ class ConfigManager:
 
     def get_summarization_interval(self) -> int:
         """Returns the number of Gemini turns before a summarization should occur."""
-        return self.config.getint('Engine', 'summarization_interval', fallback=5)
+        return self.config.getint('ENGINE_CONFIG', 'summarization_interval', fallback=10)
         
     def get_next_step_filename(self) -> str:
         return self.get_config_value('PATHS', 'next_step_filename', fallback='next_step.txt')
