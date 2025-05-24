@@ -1,0 +1,6 @@
+{
+    "task_id": "example-task-001",
+    "status": "pending|in_progress|completed|failed|clarification_needed",
+    "timestamp": "YYYY-MM-DDTHH:MM:SSZ",
+    "notes": "Optional notes about the task's progress or outcome."
+} 

@@ -1,0 +1,10 @@
+{
+    "final_handler_status_message": "RTH_EXEC_TERMINATED_TOTAL_TIMEOUT",
+    "subprocess_exit_code": 1,
+    "cli_script_exit_code": 1,
+    "stdout_temp_file_used": "C:\\Users\\Man\\AppData\\Local\\Temp\\rth_child_stdout__d9b5797",
+    "stderr_temp_file_used": "C:\\Users\\Man\\AppData\\Local\\Temp\\rth_child_stderr_3i7m6j7p",
+    "execution_start_time_epoch": 1747920249.3706248,
+    "execution_end_time_epoch": 1747920369.0122592,
+    "total_duration_seconds": 119.642
+}

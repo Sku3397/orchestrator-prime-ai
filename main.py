@@ -1,3 +1,21 @@
+"""
+Main entry point for Orchestrator Prime (Terminal Edition).
+
+This script provides a command-line interface for managing AI-driven software
+development projects. It allows users to:
+- List, add, and select projects.
+- Set goals for projects and initiate AI-driven development.
+- Provide input to the AI when it's waiting.
+- Check the status of the Orchestration Engine.
+- Stop ongoing tasks and quit the application.
+
+The application uses an OrchestrationEngine to manage the lifecycle of
+project tasks, interacting with AI models (e.g., Gemini) and executing
+commands or file modifications as directed by the AI.
+
+Logging is configured to write detailed debug logs to 'orchestrator_prime.log'
+and info-level messages to the console.
+"""
 import sys
 import json
 import time
@@ -19,6 +37,7 @@ print(f"DEBUG main.py: sys.path: {sys.path}", file=sys.stderr)
 sys.stderr.flush()
 
 def print_to_stderr(message: str):
+    """Prints a message to stderr with a specific prefix for debugging."""
     # Use a different prefix here to distinguish from test_terminal_app logs
     print(f"MAIN_DEBUG: {message}", file=sys.stderr, flush=True)
 
@@ -104,6 +123,15 @@ print_to_stderr("Logging configured and tested.")
 # --- End Logging Setup ---
 
 def ensure_app_data_scaffolding():
+    """
+    Ensures that the necessary application data directory and initial files exist.
+
+    Specifically, it checks for and creates:
+    - 'app_data/' directory: For storing application-wide data.
+    - 'app_data/projects.json': An empty JSON list for project metadata.
+
+    If these cannot be created, the application logs a critical error and exits.
+    """
     print_to_stderr("Inside ensure_app_data_scaffolding - Start")
     app_data_dir = "app_data"
     projects_json_path = os.path.join(app_data_dir, "projects.json")
@@ -128,6 +156,7 @@ def ensure_app_data_scaffolding():
     print_to_stderr("Inside ensure_app_data_scaffolding - End")
 
 def print_welcome():
+    """Prints a welcome message to the console."""
     print_to_stderr("Inside print_welcome - Start") # Debug log
     print("\nWelcome to Orchestrator Prime (Terminal Edition)")
     print("-------------------------------------------------")
@@ -135,6 +164,7 @@ def print_welcome():
     print_to_stderr("Inside print_welcome - End") # Debug log
 
 def print_help():
+    """Prints the list of available commands to the console."""
     print_to_stderr("Inside print_help - Start") # Debug log
     print("\nAvailable Commands:")
     print("  project list                - List all available projects.")
@@ -150,6 +180,22 @@ def print_help():
     print_to_stderr("Inside print_help - End") # Debug log
 
 def run_terminal_interface(engine: OrchestrationEngine):
+    """
+    Runs the main command-line interface loop for user interaction.
+
+    This function:
+    - Prints a welcome message.
+    - If a project was active in the previous session, it's automatically selected.
+    - Continuously prompts the user for input.
+    - Processes input as commands or instructions for the OrchestrationEngine.
+    - Handles commands like 'project list', 'project add', 'project select',
+      'goal', 'input', 'status', 'stop', 'quit', and 'help'.
+    - Any other input is treated as a new instruction if a project is active
+      and the engine is not currently paused waiting for specific user input.
+
+    Args:
+        engine: The OrchestrationEngine instance to interact with.
+    """
     # Add a small delay at the beginning for subprocess stream initialization robustness
     time.sleep(0.1) # Small delay
     print_to_stderr("Entering run_terminal_interface.") # Added debug log
@@ -239,6 +285,13 @@ def run_terminal_interface(engine: OrchestrationEngine):
     print_to_stderr("Exiting run_terminal_interface.") # Added debug log
 
 def print_status(engine: OrchestrationEngine):
+    """
+    Prints the current status of the Orchestration Engine and active project.
+
+    Args:
+        engine: The OrchestrationEngine instance.
+    """
+    print_to_stderr("Inside print_status - Start") # Debug log
     print("--- Current Status ---")
     print(f"Engine State: {engine.state.name}")
     if engine.current_project:
@@ -252,10 +305,25 @@ def print_status(engine: OrchestrationEngine):
     else:
         print("No project selected.")
     print("--------------------")
+    print_to_stderr("Inside print_status - End") # Debug log
 
 
-# --- Main Execution Entry Point ---
-if __name__ == "__main__":
+def main():
+    """
+    Main function to initialize and run Orchestrator Prime.
+
+    This function performs the following steps:
+    1. Records the start time of the script.
+    2. Sets up application data scaffolding (directories, initial files).
+    3. Initializes the ConfigManager to load application settings.
+    4. Initializes the OrchestrationEngine.
+    5. Attempts to load the last active project if configured to do so.
+    6. Enters the main terminal interface loop to process user commands.
+    7. Handles graceful shutdown on KeyboardInterrupt (Ctrl+C) or general exceptions,
+       ensuring the engine is stopped.
+    8. Logs the total execution time upon exit.
+    """
+    script_start_time = time.time() # Record start time
     print_to_stderr("Entering __main__ block.") # Added debug log
     engine = None # Initialize engine to None
     
@@ -289,3 +357,23 @@ if __name__ == "__main__":
     
     print_to_stderr("Exiting __main__ block.") # Added debug log
     sys.exit(0) # Exit successfully if run_terminal_interface completes normally
+
+
+if __name__ == "__main__":
+    """
+    Script entry point.
+
+    Initializes basic error stream printing for early diagnostics and then
+    calls the main() function. Handles top-level exceptions that might occur
+    before or during main() execution, logging them to stderr.
+    """
+    print_to_stderr("DEBUG __main__: Script execution started.")
+    try:
+        main()
+    except Exception as e:
+        # Fallback for any unhandled exception in main()
+        print_to_stderr(f"CRITICAL UNHANDLED EXCEPTION in __main__: {e}")
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1) # Ensure a non-zero exit code on such failure
+    finally:
+        print_to_stderr("DEBUG __main__: Script execution finished or exited.")

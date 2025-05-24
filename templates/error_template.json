@@ -1,0 +1,8 @@
+{
+    "task_id": "example-task-001",
+    "error_type": "e.g., FileNotFoundError, ValueError, CustomAppError",
+    "message": "Detailed error message.",
+    "traceback": "Full traceback if available.",
+    "retry_flag": true,
+    "suggested_clarification": "If clarification is needed from Meta-Agent."
+} 

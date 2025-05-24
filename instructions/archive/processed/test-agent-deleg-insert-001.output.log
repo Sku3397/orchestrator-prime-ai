@@ -1,0 +1,98 @@
+2025-05-22T21:27:39.342007 - INFO - Selected task based on priority and dependencies: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:27:39.342007 - INFO - Starting task: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:27:39.342007 - ERROR - Error updating status in task_queue.json: 'str' object has no attribute 'get'
+2025-05-22T21:27:39.343525 - INFO - Validating task parameters...
+2025-05-22T21:27:39.343525 - INFO - Task parameters validated.
+2025-05-22T21:27:39.343525 - INFO - Preparing file modifications for agent delegation...
+2025-05-22T21:27:39.345041 - ERROR - Error updating status in task_queue.json: 'str' object has no attribute 'get'
+2025-05-22T21:27:39.345041 - INFO - Task test-agent-deleg-insert-001 now pending agent action for: insert_after_line on target_for_insert.txt. Details: {'tool_to_call': 'edit_file', 'target_file': 'target_for_insert.txt', 'action_type': 'insert_after_line', 'line_marker': 'MARKER_LINE_HERE', 'content_to_insert': '', 'create_if_not_exists': False, 'instructions': "In file 'target_for_insert.txt', insert 'content_to_insert' after line with 'MARKER_LINE_HERE'. If create_if_not_exists (False) and file missing, agent may need to create it first (empty or with marker) if feasible for this action."}
+2025-05-22T21:27:54.346618 - INFO - Selected task based on priority and dependencies: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:27:54.346618 - INFO - Starting task: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:27:54.347624 - ERROR - Error updating status in task_queue.json: 'str' object has no attribute 'get'
+2025-05-22T21:27:54.347624 - INFO - Validating task parameters...
+2025-05-22T21:27:54.348623 - INFO - Task parameters validated.
+2025-05-22T21:27:54.348623 - INFO - Preparing file modifications for agent delegation...
+2025-05-22T21:27:54.349623 - ERROR - Error updating status in task_queue.json: 'str' object has no attribute 'get'
+2025-05-22T21:27:54.350624 - INFO - Task test-agent-deleg-insert-001 now pending agent action for: insert_after_line on target_for_insert.txt. Details: {'tool_to_call': 'edit_file', 'target_file': 'target_for_insert.txt', 'action_type': 'insert_after_line', 'line_marker': 'MARKER_LINE_HERE', 'content_to_insert': '', 'create_if_not_exists': False, 'instructions': "In file 'target_for_insert.txt', insert 'content_to_insert' after line with 'MARKER_LINE_HERE'. If create_if_not_exists (False) and file missing, agent may need to create it first (empty or with marker) if feasible for this action."}
+2025-05-22T21:28:09.351715 - INFO - Selected task based on priority and dependencies: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:28:09.352218 - INFO - Starting task: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:28:09.352218 - ERROR - Error updating status in task_queue.json: 'str' object has no attribute 'get'
+2025-05-22T21:28:09.353223 - INFO - Validating task parameters...
+2025-05-22T21:28:09.353223 - INFO - Task parameters validated.
+2025-05-22T21:28:09.353223 - INFO - Preparing file modifications for agent delegation...
+2025-05-22T21:28:09.354222 - ERROR - Error updating status in task_queue.json: 'str' object has no attribute 'get'
+2025-05-22T21:28:09.354222 - INFO - Task test-agent-deleg-insert-001 now pending agent action for: insert_after_line on target_for_insert.txt. Details: {'tool_to_call': 'edit_file', 'target_file': 'target_for_insert.txt', 'action_type': 'insert_after_line', 'line_marker': 'MARKER_LINE_HERE', 'content_to_insert': '', 'create_if_not_exists': False, 'instructions': "In file 'target_for_insert.txt', insert 'content_to_insert' after line with 'MARKER_LINE_HERE'. If create_if_not_exists (False) and file missing, agent may need to create it first (empty or with marker) if feasible for this action."}
+2025-05-22T21:28:24.355678 - INFO - Selected task based on priority and dependencies: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:28:24.356181 - INFO - Starting task: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:28:24.356181 - ERROR - Error updating status in task_queue.json: 'str' object has no attribute 'get'
+2025-05-22T21:28:24.357186 - INFO - Validating task parameters...
+2025-05-22T21:28:24.357186 - INFO - Task parameters validated.
+2025-05-22T21:28:24.357186 - INFO - Preparing file modifications for agent delegation...
+2025-05-22T21:28:24.358186 - ERROR - Error updating status in task_queue.json: 'str' object has no attribute 'get'
+2025-05-22T21:28:24.358186 - INFO - Task test-agent-deleg-insert-001 now pending agent action for: insert_after_line on target_for_insert.txt. Details: {'tool_to_call': 'edit_file', 'target_file': 'target_for_insert.txt', 'action_type': 'insert_after_line', 'line_marker': 'MARKER_LINE_HERE', 'content_to_insert': '', 'create_if_not_exists': False, 'instructions': "In file 'target_for_insert.txt', insert 'content_to_insert' after line with 'MARKER_LINE_HERE'. If create_if_not_exists (False) and file missing, agent may need to create it first (empty or with marker) if feasible for this action."}
+2025-05-22T21:28:39.360001 - INFO - Selected task based on priority and dependencies: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:28:39.360001 - INFO - Starting task: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:28:39.361007 - ERROR - Error updating status in task_queue.json: 'str' object has no attribute 'get'
+2025-05-22T21:28:39.361007 - INFO - Validating task parameters...
+2025-05-22T21:28:39.362007 - INFO - Task parameters validated.
+2025-05-22T21:28:39.362007 - INFO - Preparing file modifications for agent delegation...
+2025-05-22T21:28:39.362007 - ERROR - Error updating status in task_queue.json: 'str' object has no attribute 'get'
+2025-05-22T21:28:39.362007 - INFO - Task test-agent-deleg-insert-001 now pending agent action for: insert_after_line on target_for_insert.txt. Details: {'tool_to_call': 'edit_file', 'target_file': 'target_for_insert.txt', 'action_type': 'insert_after_line', 'line_marker': 'MARKER_LINE_HERE', 'content_to_insert': '', 'create_if_not_exists': False, 'instructions': "In file 'target_for_insert.txt', insert 'content_to_insert' after line with 'MARKER_LINE_HERE'. If create_if_not_exists (False) and file missing, agent may need to create it first (empty or with marker) if feasible for this action."}
+2025-05-22T21:28:54.646846 - INFO - Selected task based on priority and dependencies: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:28:54.646846 - INFO - Starting task: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:28:54.648361 - ERROR - Error updating status in task_queue.json: 'str' object has no attribute 'get'
+2025-05-22T21:28:54.648361 - INFO - Validating task parameters...
+2025-05-22T21:28:54.648361 - INFO - Task parameters validated.
+2025-05-22T21:28:54.648361 - INFO - Preparing file modifications for agent delegation...
+2025-05-22T21:28:54.649875 - ERROR - Error updating status in task_queue.json: 'str' object has no attribute 'get'
+2025-05-22T21:28:54.650879 - INFO - Task test-agent-deleg-insert-001 now pending agent action for: insert_after_line on target_for_insert.txt. Details: {'tool_to_call': 'edit_file', 'target_file': 'target_for_insert.txt', 'action_type': 'insert_after_line', 'line_marker': 'MARKER_LINE_HERE', 'content_to_insert': '', 'create_if_not_exists': False, 'instructions': "In file 'target_for_insert.txt', insert 'content_to_insert' after line with 'MARKER_LINE_HERE'. If create_if_not_exists (False) and file missing, agent may need to create it first (empty or with marker) if feasible for this action."}
+2025-05-22T21:29:09.651748 - INFO - Selected task based on priority and dependencies: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:29:09.651748 - INFO - Starting task: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:29:09.652752 - ERROR - Error updating status in task_queue.json: 'str' object has no attribute 'get'
+2025-05-22T21:29:09.652752 - INFO - Validating task parameters...
+2025-05-22T21:29:09.653753 - INFO - Task parameters validated.
+2025-05-22T21:29:09.653753 - INFO - Preparing file modifications for agent delegation...
+2025-05-22T21:29:09.653753 - ERROR - Error updating status in task_queue.json: 'str' object has no attribute 'get'
+2025-05-22T21:29:09.654753 - INFO - Task test-agent-deleg-insert-001 now pending agent action for: insert_after_line on target_for_insert.txt. Details: {'tool_to_call': 'edit_file', 'target_file': 'target_for_insert.txt', 'action_type': 'insert_after_line', 'line_marker': 'MARKER_LINE_HERE', 'content_to_insert': '', 'create_if_not_exists': False, 'instructions': "In file 'target_for_insert.txt', insert 'content_to_insert' after line with 'MARKER_LINE_HERE'. If create_if_not_exists (False) and file missing, agent may need to create it first (empty or with marker) if feasible for this action."}
+2025-05-22T21:29:24.655839 - INFO - Selected task based on priority and dependencies: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:29:24.655839 - INFO - Starting task: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:29:24.656844 - ERROR - Error updating status in task_queue.json: 'str' object has no attribute 'get'
+2025-05-22T21:29:24.656844 - INFO - Validating task parameters...
+2025-05-22T21:29:24.657843 - INFO - Task parameters validated.
+2025-05-22T21:29:24.657843 - INFO - Preparing file modifications for agent delegation...
+2025-05-22T21:29:24.657843 - ERROR - Error updating status in task_queue.json: 'str' object has no attribute 'get'
+2025-05-22T21:29:24.658843 - INFO - Task test-agent-deleg-insert-001 now pending agent action for: insert_after_line on target_for_insert.txt. Details: {'tool_to_call': 'edit_file', 'target_file': 'target_for_insert.txt', 'action_type': 'insert_after_line', 'line_marker': 'MARKER_LINE_HERE', 'content_to_insert': '', 'create_if_not_exists': False, 'instructions': "In file 'target_for_insert.txt', insert 'content_to_insert' after line with 'MARKER_LINE_HERE'. If create_if_not_exists (False) and file missing, agent may need to create it first (empty or with marker) if feasible for this action."}
+2025-05-22T21:29:39.660048 - INFO - Selected task based on priority and dependencies: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:29:39.660048 - INFO - Starting task: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:29:39.661053 - ERROR - Error updating status in task_queue.json: 'str' object has no attribute 'get'
+2025-05-22T21:29:39.661053 - INFO - Validating task parameters...
+2025-05-22T21:29:39.662053 - INFO - Task parameters validated.
+2025-05-22T21:29:39.662053 - INFO - Preparing file modifications for agent delegation...
+2025-05-22T21:29:39.663054 - ERROR - Error updating status in task_queue.json: 'str' object has no attribute 'get'
+2025-05-22T21:29:39.663054 - INFO - Task test-agent-deleg-insert-001 now pending agent action for: insert_after_line on target_for_insert.txt. Details: {'tool_to_call': 'edit_file', 'target_file': 'target_for_insert.txt', 'action_type': 'insert_after_line', 'line_marker': 'MARKER_LINE_HERE', 'content_to_insert': '', 'create_if_not_exists': False, 'instructions': "In file 'target_for_insert.txt', insert 'content_to_insert' after line with 'MARKER_LINE_HERE'. If create_if_not_exists (False) and file missing, agent may need to create it first (empty or with marker) if feasible for this action."}
+2025-05-22T21:29:54.664213 - INFO - Selected task based on priority and dependencies: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:29:54.664716 - INFO - Starting task: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:29:54.664716 - ERROR - Error updating status in task_queue.json: 'str' object has no attribute 'get'
+2025-05-22T21:29:54.665721 - INFO - Validating task parameters...
+2025-05-22T21:29:54.665721 - INFO - Task parameters validated.
+2025-05-22T21:29:54.665721 - INFO - Preparing file modifications for agent delegation...
+2025-05-22T21:29:54.666721 - ERROR - Error updating status in task_queue.json: 'str' object has no attribute 'get'
+2025-05-22T21:29:54.666721 - INFO - Task test-agent-deleg-insert-001 now pending agent action for: insert_after_line on target_for_insert.txt. Details: {'tool_to_call': 'edit_file', 'target_file': 'target_for_insert.txt', 'action_type': 'insert_after_line', 'line_marker': 'MARKER_LINE_HERE', 'content_to_insert': '', 'create_if_not_exists': False, 'instructions': "In file 'target_for_insert.txt', insert 'content_to_insert' after line with 'MARKER_LINE_HERE'. If create_if_not_exists (False) and file missing, agent may need to create it first (empty or with marker) if feasible for this action."}
+2025-05-22T21:30:09.971749 - INFO - Selected task based on priority and dependencies: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:30:09.971749 - INFO - Starting task: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:30:09.971749 - INFO - Status in task_queue.json updated to in_progress.
+2025-05-22T21:30:09.973269 - INFO - Validating task parameters...
+2025-05-22T21:30:09.973269 - INFO - Task parameters validated.
+2025-05-22T21:30:09.973269 - INFO - Preparing file modifications for agent delegation...
+2025-05-22T21:30:09.980829 - INFO - Status in task_queue.json updated to pending_agent_action.
+2025-05-22T21:30:09.982342 - INFO - Task test-agent-deleg-insert-001 now pending agent action for: insert_after_line on target_for_insert.txt. Details: {'tool_to_call': 'edit_file', 'target_file': 'target_for_insert.txt', 'action_type': 'insert_after_line', 'line_marker': 'MARKER_LINE_HERE', 'content_to_insert': '', 'create_if_not_exists': False, 'instructions': "In file 'target_for_insert.txt', insert 'content_to_insert' after line with 'MARKER_LINE_HERE'. If create_if_not_exists (False) and file missing, agent may need to create it first (empty or with marker) if feasible for this action."}
+2025-05-22T21:31:32.599670 - INFO - Selected task based on priority and dependencies: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:31:32.599670 - INFO - Starting task: Test agent delegation for inserting content after a specific line.
+2025-05-22T21:31:32.601181 - INFO - Status in task_queue.json updated to in_progress.
+2025-05-22T21:31:32.601181 - INFO - Validating task parameters...
+2025-05-22T21:31:32.601181 - INFO - Task parameters validated.
+2025-05-22T21:31:32.601181 - INFO - Preparing file modifications for agent delegation...
+2025-05-22T21:31:32.610277 - INFO - Status in task_queue.json updated to pending_agent_action.
+2025-05-22T21:31:32.611791 - INFO - Task test-agent-deleg-insert-001 now pending agent action for: insert_after_line on target_for_insert.txt. Details: {'tool_to_call': 'edit_file', 'target_file': 'target_for_insert.txt', 'action_type': 'insert_after_line', 'line_marker': 'MARKER_LINE_HERE', 'content_to_insert': 'NEW_LINE_1_INSERTED\nNEW_LINE_2_INSERTED', 'create_if_not_exists': False, 'instructions': "In file 'target_for_insert.txt', insert 'content_to_insert' after line with 'MARKER_LINE_HERE'. If create_if_not_exists (False) and file missing, agent may need to create it first (empty or with marker) if feasible for this action."}
+2025-05-22T21:32:02.615106 - INFO - Task 'test-agent-deleg-insert-001' is completed. Archiving files and preparing to prune from queue.
+2025-05-22T21:32:02.615106 - INFO - Archiving files for task test-agent-deleg-insert-001 to processed.

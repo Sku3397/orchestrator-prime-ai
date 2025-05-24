@@ -1,0 +1,9 @@
+{
+    "task_id": "prune-test-cmd-001",
+    "error_type": "AgentCommandExecutionError",
+    "message": "Agent simulated command failure for pruning test.",
+    "traceback": "N/A - Simulated by agent.",
+    "retry_flag": false,
+    "suggested_clarification": "Check agent RTH logs if this were real.",
+    "timestamp": "2025-05-24T15:03:01Z"
+} 

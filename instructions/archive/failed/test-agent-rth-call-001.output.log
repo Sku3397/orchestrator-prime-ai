@@ -1,0 +1,5 @@
+2025-05-22T22:06:55.794401 - INFO - Moved instructions\test-agent-rth-call-001.output.log to archive: instructions\archive\failed.
+2025-05-22T22:06:55.802401 - INFO - Moved instructions\test-agent-rth-call-001.error.json to archive: instructions\archive\failed.
+2025-05-22T22:06:55.802401 - DEBUG - No task-specific instruction subdirectory found at instructions\test-agent-rth-call-001 to remove.
+2025-05-22T22:07:10.806297 - INFO - Task 'test-agent-rth-call-001' is failed. Archiving files and preparing to prune from queue.
+2025-05-22T22:07:10.806297 - INFO - Archiving files for task test-agent-rth-call-001 to failed.

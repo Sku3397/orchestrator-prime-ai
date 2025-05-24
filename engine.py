@@ -61,6 +61,7 @@ logger = logging.getLogger("orchestrator_prime")
 print("MAIN_DEBUG: After getting logger", file=sys.stderr, flush=True)
 
 class EngineState(Enum):
+    """Enumerates the possible states of the OrchestrationEngine."""
     IDLE = auto()
     LOADING_PROJECT = auto()
     PROJECT_SELECTED = auto()
@@ -75,6 +76,38 @@ class EngineState(Enum):
     # STOPPED state was removed as PROJECT_SELECTED or IDLE can represent a stopped task
 
 class OrchestrationEngine:
+    """
+    Manages the overall process of AI-driven software development tasks.
+
+    This class orchestrates interactions between the user, the AI model (Gemini),
+    the project's file system, and external tools (simulated or real, like Cursor).
+    It maintains the state of the current project and the overall engine.
+
+    Attributes:
+        current_project (Optional[Project]): The currently active project.
+        current_project_state (Optional[ProjectState]): The state of the active project,
+            including its history, goals, and status.
+        state (EngineState): The current operational state of the engine.
+        gemini_comms_module: The module used for communication with Gemini (real or mock).
+        gemini_client: The actual client instance for Gemini communication.
+        config_manager (Optional[ConfigManager]): Manages application configuration.
+        persistence_manager: (Currently unused, intended for persistence operations).
+        _active_mock_type (Optional[str]): Stores the type of mock communicator if one is active.
+        file_observer (Optional[Observer]): A watchdog observer for monitoring file system events.
+        _log_handler (Optional[LogFileCreatedHandler]): Handler for new log file events.
+        dev_logs_dir (str): Path to the directory where development logs are expected.
+        dev_instructions_dir (str): Path to the directory for AI instructions.
+        last_error_message (Optional[str]): Stores the message of the last error encountered.
+        pending_user_question (Optional[str]): Stores a question from Gemini awaiting user input.
+        status_message_for_display (Optional[str]): A general status message for UI display.
+        _last_critical_error (Optional[str]): Stores critical error messages that might halt operations.
+        _cursor_timeout_timer (Optional[threading.Timer]): Timer for Cursor operation timeouts.
+        _shutdown_complete (bool): Flag indicating if shutdown procedures have finished.
+        _engine_lock (threading.RLock): A reentrant lock for synchronizing access to engine resources.
+        _gemini_call_thread (Optional[threading.Thread]): Thread for making non-blocking calls to Gemini.
+        _gemini_response_queue (queue.Queue): Queue for receiving responses from the Gemini thread.
+        pending_log_for_resumed_step (Optional[str]): Stores log content if a step is resumed after interruption.
+    """
     CURSOR_SOP_PROMPT_TEXT = """... (Full SOP content as defined previously) ...""" # Keep SOP text here
     GEMINI_CALL_TIMEOUT_SECONDS = 60  # Added class constant for Gemini API call timeout
 
@@ -129,6 +162,19 @@ class OrchestrationEngine:
              logger.error(f"Engine started with critical error: {self._last_critical_error}")
 
     def _set_state(self, new_state: EngineState, detail_message: Optional[str] = None):
+        """
+        Sets the engine's current operational state and logs the change.
+
+        If the new state is ERROR, `last_error_message` is updated.
+        If the new state is PAUSED_WAITING_USER_INPUT, `pending_user_question` is set.
+        Manages starting/stopping the file watcher based on state transitions.
+        Saves the project state if a project is active.
+
+        Args:
+            new_state: The EngineState to transition to.
+            detail_message: Optional string providing more context about the state change
+                            or the reason for an error/pause.
+        """
         if self.state != new_state or detail_message:
             old_state_name = self.state.name
             self.state = new_state
@@ -162,6 +208,19 @@ class OrchestrationEngine:
                     self.last_error_message = f"Failed to save project state: {e}"
 
     def set_active_project(self, project_name: str) -> bool:
+        """
+        Sets the currently active project for the engine.
+
+        If `project_name` is None, clears the active project and sets the engine to IDLE.
+        Otherwise, attempts to load the specified project by its name.
+        Updates the engine state accordingly (LOADING_PROJECT, PROJECT_SELECTED, or IDLE/ERROR).
+
+        Args:
+            project_name: The name of the project to activate, or None to clear.
+
+        Returns:
+            True if the project was successfully set (or cleared), False otherwise (e.g., project not found).
+        """
         with self._engine_lock:
             if self._last_critical_error:
                 logger.error(f"set_active_project called but engine has critical error: {self._last_critical_error}")
@@ -198,12 +257,150 @@ class OrchestrationEngine:
                     # Also print to stdout for terminal users and tests
                     print(f"Error: Project '{project_name}' not found.", file=sys.stderr, flush=True)
                     self._set_state(EngineState.IDLE, f"Project '{project_name}' not found.")
-                    self.current_project = None
+                    logger.warning(f"Project '{project_name}' not found during set_active_project.")
                     return False
 
                 self.current_project = project_to_load
-                logger.info(f"Setting active project to: {self.current_project.name}")
+                
+                # Initialize project state and directories
+                if not self._initialize_project_state_and_dirs(project_to_load):
+                    # _initialize_project_state_and_dirs will set error state if it fails
+                    self.current_project = None # Clear partially loaded project
+                    return False # Initialization failed
 
+                self._set_state(EngineState.PROJECT_SELECTED, f"Project '{project_name}' selected.")
+                logger.info(f"Project '{project_name}' is now active.")
+                
+                # Save this as the last active project name
+                if self.config_manager:
+                    self.config_manager.set_last_active_project(project_name)
+                    logger.info(f"Saved '{project_name}' as last active project in config.")
+                else:
+                    logger.warning("ConfigManager not available, cannot save last active project.")
+
+            except PersistenceError as e:
+                print(f"Error loading project data: {e}", file=sys.stderr, flush=True)
+                self._set_state(EngineState.IDLE, f"Error loading project '{project_name}': {e}")
+                logger.error(f"PersistenceError while setting active project {project_name}: {e}", exc_info=True)
+                self.current_project = None # Ensure project is cleared on error
+                self.current_project_state = None
+                return False
+            except Exception as e: # Catch any other unexpected error
+                print(f"An unexpected error occurred while loading project '{project_name}': {e}", file=sys.stderr, flush=True)
+                self._set_state(EngineState.ERROR, f"Unexpected error loading project '{project_name}': {e}")
+                logger.critical(f"Unexpected critical error while setting active project {project_name}: {e}", exc_info=True)
+                self.current_project = None
+                self.current_project_state = None
+                return False
+            return True # Project loaded and set successfully
+
+    def _initialize_project_state_and_dirs(self, project_to_load: Project):
+        """
+        Initializes the project state and associated directories for a newly selected project.
+
+        This involves:
+        - Loading the existing project state or creating a new one if it doesn't exist.
+        - Setting up paths for `dev_logs_dir` and `dev_instructions_dir` within the project.
+        - Ensuring these directories exist.
+        - Loading the mock communicator type from the project state if specified.
+
+        Args:
+            project_to_load: The Project object that has been selected.
+        """
+        logger.debug(f"_initialize_project_state_and_dirs for project: {project_to_load.name}")
+        try:
+            self.current_project_state = load_project_state(project_to_load)
+            logger.info(f"Loaded existing state for project: {project_to_load.name}")
+            if self.current_project_state.current_status: # If there's a status, log it
+                 logger.info(f"Project {project_to_load.name} was last in state: {self.current_project_state.current_status}")
+            # Update config manager with project specific history/token settings from loaded state
+            if self.config_manager and self.current_project_state:
+                self.config_manager.update_settings_from_project_state(self.current_project_state)
+
+        except FileNotFoundError:
+            logger.info(f"No existing state file found for project '{project_to_load.name}'. Creating new state.")
+            self.current_project_state = ProjectState(project_id=project_to_load.project_id)
+            if self.config_manager: # Apply global config defaults to new project state
+                self.current_project_state.max_history_turns = self.config_manager.get_max_history_turns()
+                self.current_project_state.max_context_tokens = self.config_manager.get_max_context_tokens()
+                self.current_project_state.summarization_interval = self.config_manager.get_summarization_interval()
+            try:
+                save_project_state(project_to_load, self.current_project_state)
+                logger.info(f"Created and saved new state for project: {project_to_load.name}")
+            except PersistenceError as e_save:
+                self._set_state(EngineState.ERROR, f"Failed to save new state for {project_to_load.name}: {e_save}")
+                logger.error(f"Failed to save new state for {project_to_load.name}: {e_save}", exc_info=True)
+                return False # Indicate failure
+        except PersistenceError as e_load:
+            self._set_state(EngineState.ERROR, f"Error loading state for {project_to_load.name}: {e_load}")
+            logger.error(f"Error loading state for {project_to_load.name}: {e_load}", exc_info=True)
+            return False # Indicate failure
+
+        # Define dev_logs and dev_instructions directories relative to the project's workspace root
+        # Ensure these are fetched from ConfigManager for consistency
+        if self.config_manager:
+            dev_logs_dirname = self.config_manager.get_dev_logs_dir_name()
+            dev_instructions_dirname = self.config_manager.get_dev_instructions_dir_name()
+        else: # Fallback to defaults if config manager isn't available (should ideally not happen)
+            logger.warning("ConfigManager not available during project state init. Using default dir names.")
+            dev_logs_dirname = "dev_logs"
+            dev_instructions_dirname = "dev_instructions"
+
+        self.dev_logs_dir = os.path.join(project_to_load.workspace_root_path, dev_logs_dirname)
+        self.dev_instructions_dir = os.path.join(project_to_load.workspace_root_path, dev_instructions_dirname)
+        
+        logger.debug(f"Project dev_logs_dir set to: {self.dev_logs_dir}")
+        logger.debug(f"Project dev_instructions_dir set to: {self.dev_instructions_dir}")
+
+        self._setup_project_directories() # Ensure these directories exist
+        
+        # Load mock type from project state after state is loaded/created
+        self._load_mock_type_from_project_state()
+
+        return True # Project initialized successfully
+
+    def _setup_project_directories(self):
+        """
+        Ensures that the development log and instruction directories exist for the current project.
+
+        Uses `dev_logs_dir` and `dev_instructions_dir` attributes of the engine.
+        Logs errors and sets the engine to an ERROR state if directories cannot be created.
+        """
+        if not self.current_project:
+            logger.warning("_setup_project_directories called without an active project.")
+            return
+
+        dirs_to_check = {
+            "Development Logs": self.dev_logs_dir,
+            "Development Instructions": self.dev_instructions_dir,
+            "Processed Logs": os.path.join(self.dev_logs_dir, "processed") # Also ensure 'processed' subdir
+        }
+
+        for dir_desc, dir_path in dirs_to_check.items():
+            if not dir_path: # Should not happen if project is set up correctly
+                msg = f"{dir_desc} directory path is not defined for project {self.current_project.name}."
+                logger.error(msg)
+                self._set_state(EngineState.ERROR, msg)
+                return # Stop if a critical path is missing
+
+            try:
+                if not os.path.exists(dir_path):
+                    os.makedirs(dir_path)
+                    logger.info(f"Created directory: {dir_path} for project {self.current_project.name}")
+            except OSError as e:
+                msg = f"Could not create {dir_desc} directory {dir_path}: {e}"
+                logger.error(msg, exc_info=True)
+                self._set_state(EngineState.ERROR, msg)
+                return # Stop if directory creation fails
+            except Exception as e_unhandled: # Catch any other unexpected error during directory creation
+                msg = f"Unexpected error creating {dir_desc} directory {dir_path}: {e_unhandled}"
+                logger.critical(msg, exc_info=True)
+                self._set_state(EngineState.ERROR, msg)
+                return
+
+    def _load_mock_type_from_project_state(self):
+        """
+        Loads and applies a mock communicator type if specified in the current project's state.
                 # Load project state if it exists
                 try:
                     loaded_state = load_project_state(self.current_project)
@@ -339,119 +536,124 @@ class OrchestrationEngine:
             return True
 
     def _get_last_gemini_question_from_history(self) -> Optional[str]:
-        if self.current_project_state and self.current_project_state.conversation_history:
+        """
+        Retrieves the last question asked by Gemini from the project history.
+
+        Returns:
+            The text of the last Gemini question if found, otherwise None.
+        """
+        if not self.current_project_state:
+            return None
+        if self.current_project_state.conversation_history:
             for turn in reversed(self.current_project_state.conversation_history):
                 # Assuming Turn model has a 'needs_user_input' flag, or Gemini's role indicates it.
-                # For now, let's assume questions are marked with a specific sender or a flag on the Turn object.
-                # This needs to align with how `_add_to_history` stores questions.
-                # A simple heuristic: last message from 'assistant' that implies a question.
-                # This part is refactored in _add_to_history to use a `needs_user_input` flag on the Turn object.
-                if turn.sender == "assistant" and turn.needs_user_input: # Check the flag
-                    logger.debug(f"Found last Gemini question in history: '{turn.message[:50]}...'")
+                if turn.sender == "gemini" and turn.needs_user_input:
                     return turn.message
-        logger.debug("No specific Gemini question found in history marked with needs_user_input.")
         return None
 
     def _start_file_watcher(self):
-        logger.debug("_start_file_watcher: ENTERED.")
-        # Move imports here
-        try:
-            from watchdog.observers import Observer
-            from watchdog.events import FileSystemEventHandler, FileCreatedEvent
-            logger.debug("MAIN_DEBUG: Imported watchdog inside _start_file_watcher (Success)", file=sys.stderr, flush=True)
-        except ImportError:
-            Observer = None
-            FileSystemEventHandler = None
-            logger.error("watchdog library not found. Cannot monitor log files.")
-            self._set_state(EngineState.ERROR, "File watcher (watchdog) not available. Cannot monitor log files.")
-            return
-        except Exception as e_general_watchdog:
-            logger.error(f"DEBUG Engine: General exception during watchdog import inside _start_file_watcher: {e_general_watchdog}", file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
-            Observer = None
-            FileSystemEventHandler = None
-            logger.error(f"Error importing watchdog: {e_general_watchdog}. Cannot monitor log files.")
-            self._set_state(EngineState.ERROR, f"Watcher Error: Failed to import watchdog: {e_general_watchdog}")
-            return
+        """
+        Starts a file system watcher to monitor the `dev_logs_dir` for new log files.
 
-        if not Observer or not FileSystemEventHandler:
-             # This check is now redundant after the try-except block, but keeping for clarity
-             # The return inside the except block handles the failure case.
-             pass # Already handled by the import block above.
+        If the watcher is already running or `dev_logs_dir` is not set, it does nothing.
+        Uses the `watchdog` library to observe file creation events.
+        The handler `LogFileCreatedHandler` will call `_on_log_file_created`.
+        Sets engine to ERROR state if the watcher cannot be started.
+        """
+        with self._engine_lock:
+            logger.debug("_start_file_watcher: ENTERED.")
+            # Move imports here
+            try:
+                from watchdog.observers import Observer # type: ignore
+                from watchdog.events import FileSystemEventHandler # type: ignore
+                logger.debug("_start_file_watcher: Successfully imported watchdog.observer.Observer and watchdog.events.FileSystemEventHandler.")
+            except ImportError as e:
+                logger.error(f"_start_file_watcher: Failed to import watchdog modules. File watching disabled. Error: {e}")
+                self.file_observer = None # Ensure it's None if import fails
+                self._set_state(EngineState.ERROR, "Watchdog library not available. File watching disabled.")
+                return
+            except Exception as e_general_wd_import:
+                 logger.error(f"_start_file_watcher: General exception during watchdog import: {e_general_wd_import}")
+                 self.file_observer = None
+                 self._set_state(EngineState.ERROR, f"General error importing Watchdog: {e_general_wd_import}")
+                 return
 
-        # Move class definition here
-        class LogFileCreatedHandler(FileSystemEventHandler): # type: ignore
-            def __init__(self, engine: 'OrchestrationEngine'):
-                super().__init__()
-                self.engine = engine
-                # Add debounce logic back in, accessing config_manager via self.engine
-                self.last_event_time: Dict[str, float] = {}
-                self.debounce_seconds = 2.0 # Default
-                if not self.engine.config_manager:
-                    logger.error("LogFileCreatedHandler initialized without engine.config_manager! Using default debounce.")
-                else:
-                    try:
-                        self.debounce_seconds = self.engine.config_manager.get_watchdog_debounce_seconds()
-                    except AttributeError as e: # Catch if method doesn't exist
-                         logger.error(f"LogFileCreatedHandler: Error getting watchdog_debounce_seconds from config_manager: {e}. Using default.", exc_info=True)
-                         self.debounce_seconds = 2.0 # Fallback
-                    except Exception as e: # Catch any other unexpected error
-                         logger.error(f"LogFileCreatedHandler: Unexpected error getting watchdog_debounce_seconds: {e}. Using default.", exc_info=True)
-                         self.debounce_seconds = 2.0 # Fallback
+            if self.file_observer is not None:
+                logger.debug("File watcher already running.")
+                return
 
-            def on_created(self, event):
-                logger.debug(f"on_created: Event type: {event.event_type}, Path: {event.src_path}")
-                if event.is_directory:
-                    logger.debug("on_created: Event is for a directory. Ignoring.")
-                    return
+            if not self.dev_logs_dir or not os.path.exists(self.dev_logs_dir):
+                logger.warning(f"Log directory '{self.dev_logs_dir}' not configured or does not exist. File watcher not started.")
+                return
 
-                logger.debug(f"on_created: File created event for: {event.src_path}. Current engine state: {self.engine.state.name}")
-                # Check if the created file is the specific agent output file we are waiting for
-                # Access config_manager via self.engine
-                expected_filename = self.engine.config_manager.get_cursor_output_filename()
-                if os.path.basename(event.src_path).lower() == expected_filename.lower():
-                     logger.info(f"on_created: Detected target log file: {os.path.basename(event.src_path)}. Triggering processing.")
-                     # Queue the processing to the engine's main loop or a separate handler
-                     # To avoid blocking the watchdog observer thread, we should not do heavy processing here.
-                     # The current _on_log_file_created calls into _process_cursor_log directly, which might be blocking.
-                     # Let's call _on_log_file_created from here, which already includes locking.
-                     # Need to pass the full path.
-                     try:
-                         # Ensure path is absolute
-                         abs_log_path = os.path.abspath(event.src_path)
-                         logger.debug(f"on_created: Calling _on_log_file_created with absolute path: {abs_log_path}")
-                         self.engine._on_log_file_created(abs_log_path)
-                     except Exception as e: # Catch potential exceptions from _on_log_file_created
-                          logger.error(f"on_created: Error calling _on_log_file_created: {e}", exc_info=True)
-                else:
-                     logger.debug(f"on_created: Created file is not the target log file ('{os.path.basename(event.src_path)}' != '{expected_filename}'). Ignoring.")
+            # Ensure old observer is stopped if any (defensive)
+            if self.file_observer:
+                try:
+                    if self.file_observer.is_alive():
+                        self.file_observer.stop()
+                        self.file_observer.join(timeout=5.0) # Add timeout to join
+                        logger.debug("Stopped and joined existing file_observer thread before starting new one.")
+                except Exception as e_stop_old:
+                    logger.error(f"Error stopping pre-existing file observer: {e_stop_old}", exc_info=True)
+                self.file_observer = None
 
-        if not self.current_project or not self.dev_logs_dir:
-            logger.error("Cannot start file watcher: No active project or logs directory defined.")
-            self._set_state(EngineState.ERROR, "Cannot start file watcher: No active project or logs directory defined.")
-            return
+            # Move class definition here
+            class LogFileCreatedHandler(FileSystemEventHandler): # type: ignore
+                """Handles file creation events, specifically for new log files."""
+                def __init__(self, engine: 'OrchestrationEngine'):
+                    """Initializes the handler with a reference to the engine."""
+                    self.engine = engine
+                    # Debug: Confirm handler initialization
+                    logger.debug(f"LogFileCreatedHandler initialized for engine: {engine}")
 
-        if self.file_observer and self.file_observer.is_alive():
-            logger.debug("Attempting to stop existing file watcher before starting a new one...")
-            self.stop_file_watcher()
+                def on_created(self, event):
+                    """
+                    Called when a file or directory is created in the watched path.
 
-        if self.file_observer: # Redundant check after stop_file_watcher potentially sets to None, but harmless
-            logger.warning("file_observer was not None before creating a new one. Forcing nullification.")
-            self.file_observer = None
+                    Filters for file creation events (not directory) and non-temporary files.
+                    Calls the engine's `_on_log_file_created` method.
 
-        # Instantiate the handler *after* its definition and imports are within scope
-        self._log_handler = LogFileCreatedHandler(self)
-        self.file_observer = Observer()
-        try:
-            os.makedirs(self.dev_logs_dir, exist_ok=True)
-            self.file_observer.schedule(self._log_handler, self.dev_logs_dir, recursive=False)
-            self.file_observer.start()
-            logger.info(f"File watcher started for directory: {self.dev_logs_dir}")
-            logger.debug("_start_file_watcher: Observer thread started.")
-        except Exception as e:
-            logger.error(f"Error starting file watcher on {self.dev_logs_dir}: {e}", exc_info=True)
-            self._set_state(EngineState.ERROR, f"Watcher Error: Failed to start file watcher: {e}")
-            self.file_observer = None
+                    Args:
+                        event: The event object from watchdog, representing a file system event.
+                    """
+                    # Added lock here as on_created can be called from a different thread by watchdog
+                    with self.engine._engine_lock:
+                        logger.debug(f"on_created: Event type: {event.event_type}, Path: {event.src_path}")
+                        if event.is_directory:
+                            logger.debug(f"on_created: Event for directory ignored: {event.src_path}")
+                            return
+
+                        # Basic debounce check directly in on_created to avoid rapid re-processing
+                        # Using a simpler approach than the previous complex debounce in __init__
+                        # This is a path-based debounce.
+                        current_time = time.time()
+                        last_event_time_for_path = getattr(self, f"_last_event_time_{event.src_path}", 0)
+                        debounce_seconds = 2.0 # Could be configurable
+
+                        if (current_time - last_event_time_for_path) < debounce_seconds:
+                            logger.debug(f"on_created: Debounced event for {event.src_path}")
+                            return
+                        setattr(self, f"_last_event_time_{event.src_path}", current_time)
+
+                        filename = os.path.basename(event.src_path)
+                        if filename.startswith('.') or filename.endswith(('.tmp', '.swp')):
+                            logger.debug(f"on_created: Temporary/hidden file ignored: {event.src_path}")
+                            return
+
+                        logger.info(f"Log file created: {event.src_path}")
+                        self.engine._on_log_file_created(event.src_path)
+
+            try:
+                self._log_handler = LogFileCreatedHandler(self)
+                self.file_observer = Observer()
+                self.file_observer.schedule(self._log_handler, self.dev_logs_dir, recursive=False)
+                self.file_observer.start()
+                logger.info(f"File watcher started on directory: {self.dev_logs_dir}")
+            except Exception as e:
+                logger.error(f"Failed to start file watcher on '{self.dev_logs_dir}': {e}", exc_info=True)
+                self.file_observer = None # Ensure observer is None if start fails
+                self._log_handler = None
+                self._set_state(EngineState.ERROR, f"Failed to start file watcher: {e}")
 
     def stop_file_watcher(self):
         logger.debug("stop_file_watcher: ENTERED.")
@@ -1438,6 +1640,45 @@ class OrchestrationEngine:
         else:
             print(f"Error: Invalid command '{command}'. Type 'help' for a list of commands.")
             return False
+
+    def _initialize_project_state_and_dirs(self, project_to_load: Project):
+        """
+        Initializes the project state and associated directories for a newly selected project.
+
+        This involves:
+        - Loading the existing project state or creating a new one if it doesn't exist.
+        - Setting up paths for `dev_logs_dir` and `dev_instructions_dir` within the project.
+        - Ensuring these directories exist.
+        - Loading the mock communicator type from the project state if specified.
+
+        Args:
+            project_to_load: The Project object that has been selected.
+        """
+        logger.debug(f"_initialize_project_state_and_dirs for project: {project_to_load.name}")
+        # ... existing code ...
+        return True # Project initialized successfully
+
+    def _setup_project_directories(self):
+        """
+        Ensures that the development log and instruction directories exist for the current project.
+
+        Uses `dev_logs_dir` and `dev_instructions_dir` attributes of the engine.
+        Logs errors and sets the engine to an ERROR state if directories cannot be created.
+        """
+        if not self.current_project:
+            # ... existing code ...
+            self._set_state(EngineState.ERROR, msg)
+
+    def _load_mock_type_from_project_state(self):
+        """
+        Loads and applies a mock communicator type if specified in the current project's state.
+
+        If `self.current_project_state.mock_communicator_type` is set, this method
+        will attempt to apply the corresponding mock communicator using
+        `self.apply_mock_communicator()`.
+        """
+        if self.current_project_state and self.current_project_state.mock_communicator_type:
+            # ... existing code ...
 
 # Removed dummy_gui_callback and if __name__ == '__main__' block for OrchestrationEngine
 # This module is intended to be imported, not run directly as the main script.

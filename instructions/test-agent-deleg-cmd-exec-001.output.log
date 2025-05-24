@@ -1,0 +1,2 @@
+2025-05-22T21:37:14.753259 - INFO - Moved instructions\test-agent-deleg-cmd-exec-001.output.log to archive: instructions\archive\processed.
+2025-05-22T21:37:14.755258 - INFO - Successfully removed task-specific instruction subdirectory: instructions\test-agent-deleg-cmd-exec-001

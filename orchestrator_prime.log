@@ -1,19 +1,18 @@
-2025-05-12 03:53:34,887 - orchestrator_prime - DEBUG - main.py:97 - Logging debug test message.
-2025-05-12 03:53:34,887 - orchestrator_prime - INFO - main.py:98 - Logging info test message.
-2025-05-12 03:53:34,887 - orchestrator_prime - WARNING - main.py:99 - Logging warning test message.
-2025-05-12 03:53:34,887 - orchestrator_prime - ERROR - main.py:100 - Logging error test message.
-2025-05-12 03:53:34,888 - orchestrator_prime - CRITICAL - main.py:101 - Logging critical test message.
-2025-05-12 03:53:34,888 - orchestrator_prime - INFO - engine.py:83 - OrchestrationEngine initializing...
-2025-05-12 03:53:34,890 - orchestrator_prime - DEBUG - config_manager.py:18 - Reading configuration from config.ini
-2025-05-12 03:53:34,893 - orchestrator_prime - WARNING - config_manager.py:28 - Config section 'API' missing. Adding default.
-2025-05-12 03:53:34,894 - orchestrator_prime - WARNING - config_manager.py:37 - Config section 'PATHS' missing. Adding default.
-2025-05-12 03:53:34,895 - orchestrator_prime - INFO - engine.py:1001 - Attempting to load REAL Gemini client from gemini_comms_real...
-2025-05-12 03:53:37,649 - orchestrator_prime - DEBUG - config_manager.py:18 - Reading configuration from config.ini
-2025-05-12 03:53:37,649 - orchestrator_prime - WARNING - config_manager.py:28 - Config section 'API' missing. Adding default.
-2025-05-12 03:53:37,649 - orchestrator_prime - WARNING - config_manager.py:37 - Config section 'PATHS' missing. Adding default.
-2025-05-12 03:53:37,650 - orchestrator_prime - WARNING - config_manager.py:84 - API Key is set to placeholder 'YOUR_API_KEY_HERE' in config.ini
-2025-05-12 03:53:37,650 - orchestrator_prime - INFO - engine.py:1015 - Successfully loaded REAL GeminiCommunicator from gemini_comms_real. Client type: <class 'gemini_comms_real.GeminiCommunicator'>
-2025-05-12 03:53:37,650 - orchestrator_prime - INFO - engine.py:101 - OrchestrationEngine initialized.
-2025-05-12 03:53:49,623 - orchestrator_prime - DEBUG - engine.py:1261 - Processing command: project, args: delete NonExistentDeleteProj_b273f582
-2025-05-12 03:53:49,623 - orchestrator_prime - DEBUG - engine.py:1307 - PROJECT COMMAND HANDLING: project_command=delete, project_args=NonExistentDeleteProj_b273f582
-2025-05-12 03:53:49,623 - orchestrator_prime - DEBUG - engine.py:1376 - PROJECT COMMAND HANDLING: Entering delete block
+2025-05-22 20:11:43,050 - orchestrator_prime - DEBUG - main.py:97 - Logging debug test message.
+2025-05-22 20:11:43,050 - orchestrator_prime - INFO - main.py:98 - Logging info test message.
+2025-05-22 20:11:43,050 - orchestrator_prime - WARNING - main.py:99 - Logging warning test message.
+2025-05-22 20:11:43,050 - orchestrator_prime - ERROR - main.py:100 - Logging error test message.
+2025-05-22 20:11:43,050 - orchestrator_prime - CRITICAL - main.py:101 - Logging critical test message.
+2025-05-22 20:11:43,050 - orchestrator_prime - INFO - engine.py:83 - OrchestrationEngine initializing...
+2025-05-22 20:11:43,051 - orchestrator_prime - DEBUG - config_manager.py:18 - Reading configuration from config.ini
+2025-05-22 20:11:43,051 - orchestrator_prime - INFO - engine.py:1001 - Attempting to load REAL Gemini client from gemini_comms_real...
+2025-05-22 20:11:44,006 - orchestrator_prime - DEBUG - config_manager.py:18 - Reading configuration from config.ini
+2025-05-22 20:11:44,006 - orchestrator_prime - WARNING - config_manager.py:85 - API Key is set to placeholder 'YOUR_API_KEY_HERE' in config.ini
+2025-05-22 20:11:44,006 - orchestrator_prime - INFO - engine.py:1015 - Successfully loaded REAL GeminiCommunicator from gemini_comms_real. Client type: <class 'gemini_comms_real.GeminiCommunicator'>
+2025-05-22 20:11:44,006 - orchestrator_prime - INFO - engine.py:101 - OrchestrationEngine initialized.
+2025-05-22 20:11:44,107 - orchestrator_prime - DEBUG - engine.py:1261 - Processing command: project, args: add
+2025-05-22 20:11:44,107 - orchestrator_prime - DEBUG - engine.py:1307 - PROJECT COMMAND HANDLING: project_command=add, project_args=
+2025-05-22 20:11:44,107 - orchestrator_prime - DEBUG - engine.py:1327 - PROJECT COMMAND HANDLING: Entering add/create block
+2025-05-22 20:11:44,107 - orchestrator_prime - DEBUG - engine.py:1261 - Processing command: testprojectalpha, args: 
+2025-05-22 20:11:44,107 - orchestrator_prime - DEBUG - engine.py:1261 - Processing command: c:\\users\\man\\autoagent\\op_test_workspaces\\testprojectalpha_files, args: 
+2025-05-22 20:11:44,107 - orchestrator_prime - DEBUG - engine.py:1261 - Processing command: this, args: is the overall goal for TestProjectAlpha.
